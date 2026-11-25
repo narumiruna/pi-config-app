@@ -10,7 +10,7 @@
     "uv.lock"
   ],
   "packages": {
-    "rust-template": {
+    "pi-config-app": {
       "path": ".",
       "version_file": "crates/cli/Cargo.toml",
       "tag_prefix": "v"

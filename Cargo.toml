@@ -1,3 +1,14 @@
 [workspace]
 members = ["crates/cli"]
 resolver = "3"
+
+# Rune uses these patched crates at the same revision as rune and rune-kit.
+[patch.crates-io]
+winit = { git = "https://github.com/anomalyco/rune", rev = "e16732a5f4cf19eca0de26b59f6a3c600e9c555a" }
+sctk-adwaita = { git = "https://github.com/anomalyco/rune", rev = "e16732a5f4cf19eca0de26b59f6a3c600e9c555a" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "e16732a5f4cf19eca0de26b59f6a3c600e9c555a" }
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "e16732a5f4cf19eca0de26b59f6a3c600e9c555a" }
+naga = { git = "https://github.com/anomalyco/rune", rev = "e16732a5f4cf19eca0de26b59f6a3c600e9c555a" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "e16732a5f4cf19eca0de26b59f6a3c600e9c555a" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "e16732a5f4cf19eca0de26b59f6a3c600e9c555a" }
+accesskit_atspi_common = { git = "https://github.com/anomalyco/rune", rev = "e16732a5f4cf19eca0de26b59f6a3c600e9c555a" }

@@ -3,5 +3,5 @@ revision = 5
 requires-python = ">=3.10"
 
 [[package]]
-name = "rust-template"
+name = "pi-config-app"
 source = { editable = "." }

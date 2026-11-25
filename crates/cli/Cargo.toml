@@ -1,9 +1,18 @@
 [package]
-name = "rust-template"
+name = "pi-config-app"
 version = "0.0.0"
 edition = "2024"
-description = ""
+description = "Native desktop editor for Pi user settings"
 readme = "../../README.md"
-repository = "https://github.com/narumiruna/rust-template"
+repository = "https://github.com/narumiruna/pi-config-app"
 license = "MIT"
-publish = true
+publish = false
+
+[dependencies]
+rune = { git = "https://github.com/anomalyco/rune", rev = "e16732a5f4cf19eca0de26b59f6a3c600e9c555a", default-features = false, features = ["accessibility", "embedded-fonts"] }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "e16732a5f4cf19eca0de26b59f6a3c600e9c555a", default-features = false }
+serde_json = { version = "1", features = ["raw_value"] }
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
