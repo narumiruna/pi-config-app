@@ -1,0 +1,28 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: changenote-release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: release
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Push the release branch and tags, and create GitHub Releases.
+      pull-requests: write # Open and update the managed release pull request.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: changenote/action@339f86c81883cb39f3003a38534ca87c97d1d7c2
+        with:
+          operation: auto
