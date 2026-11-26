@@ -10,11 +10,12 @@ use rune_kit::{
 };
 use serde_json::Value;
 
-use crate::fields::{DEFAULT, FIELDS, GROUPS, Group, Input, Kind, Spec};
+use crate::fields::{Atom, DEFAULT, FIELDS, GROUPS, Group, Input, Kind, Spec};
 use crate::settings::{Changes, SaveError, Settings, settings_path};
 
 const UNSUPPORTED: &str = "Unsupported value";
 const FORM_SCROLL: &str = "settings-form";
+const MARKER_GUTTER: f32 = 10.0;
 pub const TITLEBAR_HEIGHT: f32 = 32.0;
 
 fn group_index(group: Group) -> usize {
@@ -242,7 +243,9 @@ fn field_row(editor: &Editor, kit: &Kit, layer: &mut Vec<El>, index: usize, spec
     let field = &editor.fields[index];
     let unsupported = matches!(field.draft, Draft::Unsupported);
     let disabled = editor.settings.is_err() || unsupported;
-    let issue = field.value(spec).err();
+    let value = field.value(spec);
+    let non_default =
+        matches!(&value, Ok(Some(value)) if spec.default.map(Atom::value).as_ref() != Some(value));
     let id = spec.control_id();
     let control = match spec.kind {
         Kind::Choice(options) => {
@@ -293,7 +296,7 @@ fn field_row(editor: &Editor, kit: &Kit, layer: &mut Vec<El>, index: usize, spec
                 .label(spec.label)
                 .placeholder(placeholder)
                 .disabled(disabled)
-                .invalid(issue.is_some())
+                .invalid(value.is_err())
                 .width(None)
                 .on_edit(move |s: &mut Editor| match &mut s.fields[index].draft {
                     Draft::Input { edit, .. } => edit,
@@ -339,38 +342,58 @@ fn field_row(editor: &Editor, kit: &Kit, layer: &mut Vec<El>, index: usize, spec
                 .child(focus_row(action, spec))
         }
     };
-    let mut title = col().grow(1.0).min_w(0.0).gap(4.0).child(
-        text(spec.label)
-            .font(kit.ty.ui_medium)
-            .color(kit.c.text_strong)
-            .wrap()
-            .w_full(),
-    );
-    if let Some(issue) = issue {
-        title = title.child(
+    let label = text(spec.label)
+        .key(format!("label-{}", spec.path))
+        .font(kit.ty.ui_medium)
+        .color(kit.c.text_strong)
+        .wrap()
+        .w_full();
+    let label = if non_default {
+        label.description("Non-default value")
+    } else {
+        label
+    };
+    let title = col().grow(1.0).min_w(0.0).gap(4.0).child(label);
+    let title = match value {
+        Err(issue) => title.child(
             text(issue)
                 .font(kit.ty.ui_compact)
                 .color(kit.c.danger.fg)
                 .wrap()
                 .w_full(),
-        );
-    } else if unsupported {
-        title = title.child(
+        ),
+        _ if unsupported => title.child(
             text("Existing value is kept as-is")
                 .font(kit.ty.ui_compact)
                 .color(kit.c.text_muted)
                 .wrap()
                 .w_full(),
-        );
-    }
+        ),
+        _ => title,
+    };
+    let gutter = row().w(MARKER_GUTTER).children(non_default.then(|| {
+        el().key("non-default-marker")
+            .w(4.0)
+            .h(22.0)
+            .radius(2.0)
+            .fill(kit.c.text_faint)
+            .a11y_hidden()
+    }));
     row()
         .key(format!("field-{}", spec.path))
         .w_full()
-        .gap(12.0)
         .center_y()
         .py(6.0)
-        .child(title)
-        .child(control)
+        .child(gutter)
+        .child(
+            row()
+                .grow(1.0)
+                .min_w(0.0)
+                .gap(12.0)
+                .center_y()
+                .child(title)
+                .child(control),
+        )
 }
 
 fn appearance_section(kit: &Kit, path: &str) -> Option<El> {
@@ -383,12 +406,18 @@ fn appearance_section(kit: &Kit, path: &str) -> Option<El> {
         "markdown.codeBlockIndent" => "Markdown",
         _ => return None,
     };
-    let heading = col().w_full().pt(10.0).pb(4.0).gap(4.0).child(
-        text(label)
-            .role("heading")
-            .font(kit.ty.ui_medium)
-            .color(kit.c.text_muted),
-    );
+    let heading = col()
+        .w_full()
+        .pl(MARKER_GUTTER)
+        .pt(10.0)
+        .pb(4.0)
+        .gap(4.0)
+        .child(
+            text(label)
+                .role("heading")
+                .font(kit.ty.ui_medium)
+                .color(kit.c.text_muted),
+        );
     Some(if path == "fullscreenExitOutput" {
         heading.child(
             text("These settings only apply in fullscreen mode.")
@@ -471,7 +500,12 @@ pub fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
         .enumerate()
         .filter(|(_, spec)| spec.group == editor.group)
         .fold(
-            col().w_full().px(14.0).radius(8.0).fill(kit.c.layer_01),
+            col()
+                .w_full()
+                .pl(14.0 - MARKER_GUTTER)
+                .pr(14.0)
+                .radius(8.0)
+                .fill(kit.c.layer_01),
             |rows, (i, spec)| {
                 rows.children(appearance_section(&kit, spec.path))
                     .child(field_row(editor, &kit, &mut layer, i, spec))

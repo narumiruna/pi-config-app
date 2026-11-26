@@ -88,6 +88,7 @@ pub struct Spec {
     pub label: &'static str,
     pub group: Group,
     pub kind: Kind,
+    pub default: Option<Atom>,
 }
 
 impl Spec {
@@ -114,49 +115,73 @@ macro_rules! choices {
 }
 
 macro_rules! field {
-    ($group:ident, $path:literal, $label:literal, $kind:expr) => {
+    ($group:ident, $path:literal, $label:literal, $kind:expr, $default:expr) => {
         Spec {
             group: $group,
             path: $path,
             label: $label,
             kind: $kind,
+            default: $default,
         }
     };
 }
 
 const QUEUE: Kind = choices!("all", "one-at-a-time");
 
+// Built-in defaults for Pi 1.6.0 (see docs/prd/pi-config-app.md).
 pub const FIELDS: &[Spec] = &[
-    field!(Models, "defaultProvider", "Default provider", TEXT),
-    field!(Models, "defaultModel", "Default model ID", TEXT),
+    field!(Models, "defaultProvider", "Default provider", TEXT, None),
+    field!(Models, "defaultModel", "Default model ID", TEXT, None),
     field!(
         Models,
         "defaultThinkingLevel",
         "Default thinking level",
-        choices!("off", "minimal", "low", "medium", "high", "xhigh", "max")
+        choices!("off", "minimal", "low", "medium", "high", "xhigh", "max"),
+        Some(S("medium"))
     ),
     field!(
         Models,
         "hideThinkingBlock",
         "Thinking block",
-        Choice(&[("Show", B(false)), ("Hide", B(true))])
+        Choice(&[("Show", B(false)), ("Hide", B(true))]),
+        Some(B(false))
     ),
-    field!(Models, "showCacheMissNotices", "Cache miss notices", ON_OFF),
-    field!(Interaction, "steeringMode", "Steering messages", QUEUE),
-    field!(Interaction, "followUpMode", "Follow-up messages", QUEUE),
+    field!(
+        Models,
+        "showCacheMissNotices",
+        "Cache miss notices",
+        ON_OFF,
+        Some(B(false))
+    ),
+    field!(
+        Interaction,
+        "steeringMode",
+        "Steering messages",
+        QUEUE,
+        Some(S("one-at-a-time"))
+    ),
+    field!(
+        Interaction,
+        "followUpMode",
+        "Follow-up messages",
+        QUEUE,
+        Some(S("one-at-a-time"))
+    ),
     field!(
         Interaction,
         "doubleEscapeAction",
         "Double Escape action",
-        choices!("tree", "fork", "none")
+        choices!("tree", "fork", "none"),
+        Some(S("tree"))
     ),
     field!(
         Interaction,
         "treeFilterMode",
         "Initial tree filter",
-        choices!("default", "no-tools", "user-only", "labeled-only", "all")
+        choices!("default", "no-tools", "user-only", "labeled-only", "all"),
+        Some(S("default"))
     ),
-    field!(Appearance, "theme", "Theme", TEXT),
+    field!(Appearance, "theme", "Theme", TEXT, Some(S("system"))),
     field!(
         Appearance,
         "quietStartup",
@@ -165,62 +190,78 @@ pub const FIELDS: &[Spec] = &[
             ("Hide startup", B(true)),
             ("Show startup", B(false)),
             ("Header only", S("header"))
-        ])
+        ]),
+        Some(B(false))
     ),
     field!(
         Appearance,
         "tuiMode",
         "Terminal UI mode",
-        choices!("regular", "fullscreen")
+        choices!("regular", "fullscreen"),
+        Some(S("fullscreen"))
     ),
     field!(
         Appearance,
         "fullscreenExitOutput",
         "Fullscreen exit output",
-        choices!("transcript", "resume-hint")
+        choices!("transcript", "resume-hint"),
+        Some(S("transcript"))
     ),
     field!(
         Appearance,
         "fullscreenScrollbar",
         "Fullscreen scrollbar",
-        choices!("auto", "always", "hidden")
+        choices!("auto", "always", "hidden"),
+        Some(S("auto"))
     ),
     field!(
         Appearance,
         "fullscreenCopyOnSelect",
         "Fullscreen copy on select",
-        ON_OFF
+        ON_OFF,
+        Some(B(true))
     ),
     field!(
         Appearance,
         "fullscreenWheelScrollLines",
         "Fullscreen wheel lines",
-        Entry(WheelLines)
+        Entry(WheelLines),
+        Some(S("auto"))
     ),
     field!(
         Appearance,
         "editorPaddingX",
         "Editor padding (cells)",
-        Entry(Whole { min: 0, max: 3 })
+        Entry(Whole { min: 0, max: 3 }),
+        Some(N(0))
     ),
     field!(
         Appearance,
         "outputPad",
         "Transcript padding (cells)",
-        Choice(&[("0", N(0)), ("1", N(1))])
+        Choice(&[("0", N(0)), ("1", N(1))]),
+        Some(N(1))
     ),
     field!(
         Appearance,
         "autocompleteMaxVisible",
         "Maximum autocomplete entries",
-        Entry(Whole { min: 3, max: 20 })
+        Entry(Whole { min: 3, max: 20 }),
+        Some(N(5))
     ),
-    field!(Appearance, "showHardwareCursor", "Terminal cursor", ON_OFF),
+    field!(
+        Appearance,
+        "showHardwareCursor",
+        "Terminal cursor",
+        ON_OFF,
+        Some(B(false))
+    ),
     field!(
         Appearance,
         "terminal.showImages",
         "Show images in terminal",
-        ON_OFF
+        ON_OFF,
+        Some(B(true))
     ),
     field!(
         Appearance,
@@ -229,25 +270,29 @@ pub const FIELDS: &[Spec] = &[
         Entry(Whole {
             min: 1,
             max: 9_007_199_254_740_991
-        })
+        }),
+        Some(N(60))
     ),
     field!(
         Appearance,
         "terminal.clearOnShrink",
         "Clear terminal on shrink",
-        ON_OFF
+        ON_OFF,
+        Some(B(false))
     ),
     field!(
         Appearance,
         "terminal.showTerminalProgress",
         "Show terminal progress",
-        ON_OFF
+        ON_OFF,
+        Some(B(false))
     ),
     field!(
         Appearance,
         "terminal.hyperlinks",
         "Terminal hyperlinks",
-        AUTO_BOOL
+        AUTO_BOOL,
+        Some(S("auto"))
     ),
     field!(
         Appearance,
@@ -258,42 +303,49 @@ pub const FIELDS: &[Spec] = &[
             ("iterm2", S("iterm2")),
             ("auto", S("auto")),
             ("Off", B(false))
-        ])
+        ]),
+        Some(S("auto"))
     ),
     field!(
         Appearance,
         "terminal.trueColor",
         "Terminal true color",
-        AUTO_BOOL
+        AUTO_BOOL,
+        Some(S("auto"))
     ),
     field!(
         Appearance,
         "images.autoResize",
         "Resize images sent to models",
-        ON_OFF
+        ON_OFF,
+        Some(B(true))
     ),
     field!(
         Appearance,
         "images.blockImages",
         "Block images sent to models",
-        ON_OFF
+        ON_OFF,
+        Some(B(false))
     ),
     field!(
         Appearance,
         "markdown.codeBlockIndent",
         "Markdown code block indent",
-        Entry(Text { allow_empty: true })
+        Entry(Text { allow_empty: true }),
+        Some(S("  "))
     ),
     field!(
         Appearance,
         "markdown.mermaid",
         "Mermaid rendering",
-        choices!("off", "final", "streaming")
+        choices!("off", "final", "streaming"),
+        Some(S("streaming"))
     ),
     field!(
         Updates,
         "collapseChangelog",
         "Condense the update changelog",
-        ON_OFF
+        ON_OFF,
+        Some(B(false))
     ),
 ];
