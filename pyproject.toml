@@ -1,6 +1,6 @@
 [project]
-name = "rust-template"
-description = ""
+name = "pi-config-app"
+description = "Native desktop editor for Pi user settings"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -8,7 +8,7 @@ dependencies = []
 dynamic = ["version"]
 
 [project.urls]
-Repository = "https://github.com/narumiruna/rust-template"
+Repository = "https://github.com/narumiruna/pi-config-app"
 
 [build-system]
 requires = ["maturin>=1.9,<2"]
