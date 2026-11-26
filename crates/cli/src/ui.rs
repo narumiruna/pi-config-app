@@ -1,9 +1,12 @@
+use std::cell::Cell;
 use std::io;
 use std::path::PathBuf;
+use std::rc::Rc;
 
-use rune::{Cx, El, LiveRegion, ScrollSpec, TextEdit, TextStyle, col, row, text};
+use rune::{Cx, El, LiveRegion, ScrollSpec, TextEdit, TextStyle, Tx, col, row, text};
 use rune_kit::{
-    Button, ButtonVariant, ControlSize, Dialog, Kit, Select, SelectAppearance, TextInput,
+    Button, ButtonVariant, ControlSize, Dialog, Kit, ScrollBar, ScrollBarStyle, Select,
+    SelectAppearance, TextInput,
 };
 use serde_json::Value;
 
@@ -12,6 +15,13 @@ use crate::settings::{Changes, SaveError, Settings, settings_path};
 
 const UNSUPPORTED: &str = "Unsupported value";
 const FORM_SCROLL: &str = "settings-form";
+
+fn group_index(group: Group) -> usize {
+    GROUPS
+        .iter()
+        .position(|&(item, _, _)| item == group)
+        .expect("every settings group has a tab")
+}
 
 enum Draft {
     Unsupported,
@@ -93,6 +103,8 @@ pub struct Editor {
     settings: io::Result<Settings>,
     fields: Vec<Field>,
     group: Group,
+    // Rune's layout callback observes scrolling without rebuilding the editor.
+    scroll_offsets: [Rc<Cell<f32>>; GROUPS.len()],
     menu: Option<usize>,
     confirm_reload: bool,
     notice: Option<(bool, String)>,
@@ -109,6 +121,7 @@ impl Editor {
             settings,
             fields: Vec::new(),
             group: Group::Models,
+            scroll_offsets: Default::default(),
             menu: None,
             confirm_reload: false,
             notice: None,
@@ -134,10 +147,25 @@ impl Editor {
         self.read_fields();
     }
 
-    fn changes(&self) -> Result<Changes, ()> {
+    fn show_group(&mut self, group: Group, tx: &mut Tx) {
+        if self.group != group {
+            self.group = group;
+            self.menu = None;
+            tx.scroll_to_y(FORM_SCROLL, self.scroll_offsets[group_index(group)].get());
+        }
+    }
+
+    fn reveal_invalid(&mut self, spec: &Spec, tx: &mut Tx) {
+        self.group = spec.group;
+        self.menu = None;
+        tx.scroll_center_in_instant(FORM_SCROLL, format!("field-{}", spec.path));
+        tx.focus_when_shown(format!("{}-input", spec.control_id()), true);
+    }
+
+    fn changes(&self) -> Result<Changes, &'static Spec> {
         let mut changes = Changes::new();
         for (spec, field) in FIELDS.iter().zip(&self.fields) {
-            let value = field.value(spec).map_err(|_| ())?;
+            let value = field.value(spec).map_err(|_| spec)?;
             if value != field.initial {
                 changes.insert(spec.path, value);
             }
@@ -177,9 +205,13 @@ impl Editor {
         }
     }
 
-    fn status(&self, dirty: bool, invalid: bool) -> (bool, String) {
-        if invalid {
-            return (true, "Fix invalid settings before saving.".into());
+    fn status(&self, dirty: bool, invalid: Option<&Spec>) -> (bool, String) {
+        if let Some(spec) = invalid {
+            let (_, group, _) = GROUPS[group_index(spec.group)];
+            return (
+                true,
+                format!("Fix {} in {} before saving.", spec.label, group),
+            );
         }
         if let Some(notice) = &self.notice {
             return notice.clone();
@@ -340,11 +372,40 @@ fn field_row(editor: &Editor, kit: &Kit, layer: &mut Vec<El>, index: usize, spec
         .child(control)
 }
 
+fn appearance_section(kit: &Kit, path: &str) -> Option<El> {
+    let label = match path {
+        "theme" => "Terminal",
+        "fullscreenExitOutput" => "Fullscreen",
+        "editorPaddingX" => "Editor and transcript",
+        "terminal.showImages" => "Terminal capabilities",
+        "images.autoResize" => "Images",
+        "markdown.codeBlockIndent" => "Markdown",
+        _ => return None,
+    };
+    let heading = col().w_full().pt(10.0).pb(4.0).gap(4.0).child(
+        text(label)
+            .role("heading")
+            .font(kit.ty.ui_medium)
+            .color(kit.c.text_muted),
+    );
+    Some(if path == "fullscreenExitOutput" {
+        heading.child(
+            text("These settings only apply in fullscreen mode.")
+                .font(kit.ty.ui_compact)
+                .color(kit.c.text_muted)
+                .w_full()
+                .wrap(),
+        )
+    } else {
+        heading
+    })
+}
+
 pub fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
     let kit = Kit::neutral(cx.system_dark());
     let mut layer = Vec::new();
     let changes = editor.changes();
-    let invalid = changes.is_err();
+    let invalid = changes.as_ref().err().copied();
     let dirty = !matches!(changes, Ok(changes) if changes.is_empty());
     let (error, status) = editor.status(dirty, invalid);
     let path = editor.path.as_ref().map_or_else(
@@ -366,13 +427,7 @@ pub fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
                     .key(key)
                     .role("tab")
                     .focus_selected(active)
-                    .on_press_tx(move |s: &mut Editor, tx| {
-                        if group != s.group {
-                            s.group = group;
-                            s.menu = None;
-                            tx.scroll_to_instant(FORM_SCROLL, 0.0, 0.0);
-                        }
-                    })
+                    .on_press_tx(move |s: &mut Editor, tx| s.show_group(group, tx))
                     .press_on_return(),
             )
         })
@@ -396,13 +451,32 @@ pub fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
                 .color(kit.c.text_muted),
         )
         .child(
-            text(path)
-                .key("settings-path")
-                .font(kit.ty.ui)
-                .color(kit.c.text_strong)
-                .wrap_anywhere()
+            row()
                 .w_full()
-                .selectable(true),
+                .gap(8.0)
+                .center_y()
+                .child(
+                    text(path)
+                        .key("settings-path")
+                        .font(kit.ty.ui)
+                        .color(kit.c.text_strong)
+                        .grow(1.0)
+                        .truncate_middle()
+                        .selectable(true),
+                )
+                .child(
+                    Button::new("Copy path")
+                        .help("Copy the full settings file path")
+                        .disabled(editor.path.is_none())
+                        .build(&kit)
+                        .key("copy-settings-path")
+                        .on_press_tx(|s: &mut Editor, tx| {
+                            if let Some(path) = &s.path {
+                                tx.copy(path.display().to_string());
+                            }
+                        })
+                        .press_on_return(),
+                ),
         )
         .child(navigation);
     let fields = FIELDS
@@ -411,8 +485,12 @@ pub fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
         .filter(|(_, spec)| spec.group == editor.group)
         .fold(
             col().w_full().px(14.0).radius(8.0).fill(kit.c.layer_01),
-            |rows, (i, spec)| rows.child(field_row(editor, &kit, &mut layer, i, spec)),
+            |rows, (i, spec)| {
+                rows.children(appearance_section(&kit, spec.path))
+                    .child(field_row(editor, &kit, &mut layer, i, spec))
+            },
         );
+    let offset = Rc::clone(&editor.scroll_offsets[group_index(editor.group)]);
 
     Dialog::new("confirm-reload", "Discard unsaved changes?")
         .open(editor.confirm_reload)
@@ -455,7 +533,15 @@ pub fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
                 .min_h(0.0)
                 .w_full()
                 .scroll(ScrollSpec::default())
-                .child(col().w_full().px(20.0).pb(10.0).child(fields)),
+                .scroll_margin(6.0)
+                .on_scroll_offset(move |pos| offset.set(pos.offset[1]))
+                .child(col().w_full().px(20.0).pb(10.0).child(fields))
+                .scroll_bar_styled(
+                    ScrollBarStyle::from_kit(&kit)
+                        .always_visible()
+                        .thumb(kit.c.text_faint)
+                        .thumb_hover(kit.c.text_muted),
+                ),
         )
         .child(
             col()
@@ -485,6 +571,14 @@ pub fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
                     row()
                         .gap(8.0)
                         .justify_end()
+                        .children(invalid.map(|spec| {
+                            Button::new("Go to field")
+                                .control_size(ControlSize::Large)
+                                .build(&kit)
+                                .key("jump-to-invalid")
+                                .on_press_tx(move |s: &mut Editor, tx| s.reveal_invalid(spec, tx))
+                                .press_on_return()
+                        }))
                         .child(
                             Button::new("Reload")
                                 .control_size(ControlSize::Large)
@@ -501,7 +595,7 @@ pub fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
                             Button::new("Save")
                                 .control_size(ControlSize::Large)
                                 .variant(ButtonVariant::Contrast)
-                                .disabled(editor.settings.is_err() || !dirty || invalid)
+                                .disabled(editor.settings.is_err() || !dirty || invalid.is_some())
                                 .on_press(Editor::save)
                                 .build(&kit)
                                 .key("save")

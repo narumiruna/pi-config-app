@@ -133,7 +133,7 @@ impl Run {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Script {
     ticks: u32,
     events: Vec<Value>,
@@ -158,6 +158,10 @@ impl Script {
 
     fn group(&mut self, group: &str) {
         self.tap(&format!("group-{group}"));
+    }
+
+    fn scroll_form(&mut self, dy: i32) {
+        self.event(json!({"type": "wheel", "key": "settings-form", "dy": dy}));
     }
 
     fn replace_input(&mut self, key: &str, value: &str) {
@@ -214,6 +218,40 @@ impl Tree {
                         .strip_prefix(path)
                         .is_some_and(|suffix| suffix.starts_with('/')))
         })
+    }
+
+    fn accessible_node(&self, key: &str) -> &Value {
+        fn find<'a>(node: &'a Value, key: &str) -> Option<&'a Value> {
+            if node["key"] == key {
+                return Some(node);
+            }
+            node["children"]
+                .as_array()?
+                .iter()
+                .find_map(|child| find(child, key))
+        }
+        find(&self.0["accessibility"], key).unwrap_or_else(|| panic!("no accessible {key:?} in UI"))
+    }
+
+    fn rect(&self, key: &str) -> [f64; 4] {
+        std::array::from_fn(|i| self.node(key)["rect"][i].as_f64().unwrap())
+    }
+
+    fn assert_in_bounds(&self, key: &str, [left, top, width, height]: [f64; 4]) {
+        let [x, y, w, h] = self.rect(key);
+        // Rune rounds the individual coordinates to hundredths of a point.
+        let tolerance = 0.02;
+        assert!(
+            w > 0.0
+                && h > 0.0
+                && x >= left - tolerance
+                && y >= top - tolerance
+                && x + w <= left + width + tolerance
+                && y + h <= top + height + tolerance,
+            "{key} at {:?} is outside {:?}",
+            [x, y, w, h],
+            [left, top, width, height]
+        );
     }
 
     fn assert_value(&self, key: &str, expected: &str) {
@@ -527,6 +565,95 @@ fn sets_reopens_and_resets_every_setting_across_all_groups() {
 }
 
 #[test]
+fn appearance_has_section_headings_and_preserves_its_scroll_position_across_tabs() {
+    let f = Fixture::new();
+    write(&f.settings(), "{}");
+    let mut script = Script::in_group("appearance");
+    let top = f.run(None, script.clone());
+    let headings: Vec<_> = top
+        .subtree("settings-form")
+        .filter(|node| node["role"] == "heading")
+        .map(|node| node["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        headings,
+        [
+            "Terminal",
+            "Fullscreen",
+            "Editor and transcript",
+            "Terminal capabilities",
+            "Images",
+            "Markdown"
+        ]
+    );
+
+    // The scrollbar must already be visible before any scroll or hover on the form.
+    let form = top.rect("settings-form");
+    for key in ["scroll-bar", "thumb"] {
+        assert!(
+            top.node(key)["opacity"].as_f64().unwrap() > 0.0,
+            "{key} is hidden at rest"
+        );
+        top.assert_in_bounds(key, form);
+    }
+
+    let row = "field-terminal.imageWidthCells";
+    script.scroll_form(-500);
+    let scrolled = f.run(None, script.clone());
+    assert_ne!(scrolled.rect(row), top.rect(row));
+    scrolled.assert_in_bounds(row, form);
+    assert!(scrolled.rect("thumb")[1] > top.rect("thumb")[1]);
+
+    script.group("models");
+    let models = f.run(None, script.clone());
+    assert_eq!(models.node("group-models")["itemSelected"], true);
+    models.assert_in_bounds("field-defaultProvider", models.rect("settings-form"));
+    script.group("appearance");
+    let returned = f.run(None, script);
+    assert_eq!(returned.node("group-appearance")["itemSelected"], true);
+    assert_eq!(returned.rect(row), scrolled.rect(row));
+}
+
+#[test]
+fn fullscreen_preferences_have_a_persistent_hint_and_can_be_changed_in_regular_mode() {
+    let f = Fixture::new();
+    let path = f.settings();
+    write(&path, r#"{"tuiMode":"regular"}"#);
+    let hint = "These settings only apply in fullscreen mode.";
+    let assert_regular_with_hint = |tree: &Tree| {
+        tree.assert_value("tuiMode-trigger", "regular");
+        let mut form = tree.subtree("settings-form");
+        assert!(form.any(|node| node["role"] == "heading" && node["text"] == "Fullscreen"));
+        assert!(
+            form.take_while(|node| node["key"] != "field-fullscreenExitOutput")
+                .any(|node| node["text"] == hint),
+            "missing hint at the top of the Fullscreen section"
+        );
+    };
+    let mut script = Script::in_group("appearance");
+    assert_regular_with_hint(&f.run_tall(script.clone()));
+
+    script.select("fullscreenExitOutput", 2);
+    script.select("fullscreenScrollbar", 2);
+    script.select("fullscreenCopyOnSelect", 2);
+    script.replace_input("fullscreenWheelScrollLines", "7");
+    script.tap("save");
+    let saved = f.run_tall(script);
+    saved.assert_message("/reload");
+    assert_regular_with_hint(&saved);
+    assert_eq!(
+        read_json(&path),
+        json!({
+            "tuiMode": "regular",
+            "fullscreenExitOutput": "resume-hint",
+            "fullscreenScrollbar": "always",
+            "fullscreenCopyOnSelect": false,
+            "fullscreenWheelScrollLines": 7,
+        })
+    );
+}
+
+#[test]
 fn switching_groups_keeps_pending_edits_without_writing_or_creating_a_parent() {
     let f = Fixture::new();
     let path = f.settings();
@@ -664,6 +791,65 @@ fn invalid_numeric_edits_explain_the_error_and_block_other_pending_edits() {
 }
 
 #[test]
+fn jumps_from_the_models_save_error_to_the_offscreen_invalid_input() {
+    let f = Fixture::new();
+    let path = f.settings();
+    let original = r#"{"defaultProvider":"old-provider","terminal":{"imageWidthCells":60}}"#;
+    write(&path, original);
+    let field = "terminal.imageWidthCells";
+    let row = "field-terminal.imageWidthCells";
+    let input = "terminal.imageWidthCells-input";
+    let mut script = Script::default();
+    script.replace_input("defaultProvider", "new-provider");
+    script.group("appearance");
+    script.scroll_form(-500);
+    script.replace_input(field, "0");
+    // Leave the row offscreen before changing tabs, so restoring Appearance is not enough.
+    script.scroll_form(1000);
+    let at_top = f.run(None, script.clone());
+    let [_, form_y, _, form_h] = at_top.rect("settings-form");
+    assert!(
+        at_top.rect(row)[1] >= form_y + form_h,
+        "the invalid row must start offscreen"
+    );
+    script.group("models");
+    script.tap("save");
+    let blocked = f.run(None, script.clone());
+    assert_eq!(blocked.node("group-models")["itemSelected"], true);
+    blocked.assert_value("defaultProvider-input", "new-provider");
+    blocked.assert_save_disabled();
+    let status = blocked.node("status")["text"].as_str().unwrap();
+    assert!(
+        status.contains("Appearance") && status.contains("Image width (cells)"),
+        "{status}"
+    );
+    assert_eq!(blocked.node("jump-to-invalid")["focusable"], true);
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    script.tap("jump-to-invalid");
+    let jumped = f.run(None, script.clone());
+    assert_eq!(jumped.node("group-appearance")["itemSelected"], true);
+    jumped.assert_in_bounds(row, jumped.rect("settings-form"));
+    assert!(
+        jumped
+            .subtree(input)
+            .any(|node| node["focused"] == true && node["role"] == "textbox")
+    );
+    jumped.assert_value(input, "0");
+    jumped.assert_save_disabled();
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    script.event(json!({"type": "key", "name": "a", "cmd": true}));
+    script.event(json!({"paste": "72"}));
+    script.tap("save");
+    f.run(None, script).assert_message("/reload");
+    assert_eq!(
+        read_json(&path),
+        json!({"defaultProvider": "new-provider", "terminal": {"imageWidthCells": 72}})
+    );
+}
+
+#[test]
 fn can_correct_or_reset_invalid_input_after_switching_groups() {
     let f = Fixture::new();
     let path = f.settings();
@@ -796,6 +982,65 @@ fn resolves_agent_directory_and_displays_the_settings_path() {
         tree.assert_path(&path);
         tree.assert_value("theme-input", theme);
     }
+}
+
+#[test]
+fn long_path_keeps_the_copy_button_model_fields_and_save_in_the_smallest_window() {
+    let f = Fixture::new();
+    let dir = (0..7).fold(f.root.clone(), |dir, _| {
+        dir.join("portable-settings-".repeat(6))
+    });
+    let path = dir.join("settings.json");
+    let original = r#"{"defaultProvider":"old-provider"}"#;
+    write(&path, original);
+    let past = UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+    File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(past)
+        .unwrap();
+
+    let mut script = Script::default();
+    script.replace_input("defaultProvider", "unsaved-provider");
+    script.tap("copy-settings-path");
+    let mut run = f.prepare(Some(&dir), script);
+    run.command.args(["--size", "500x430"]);
+    let tree = run.finish();
+
+    assert_eq!(tree.0["viewport"], json!([500.0, 430.0]));
+    let window = [0.0, 0.0, 500.0, 430.0];
+    let path_node = tree.node("settings-path");
+    assert_eq!(path_node["text"], path.to_str().unwrap());
+    assert_eq!(
+        tree.accessible_node("settings-path")["name"],
+        path.to_str().unwrap()
+    );
+    assert_eq!(path_node["rect"][3], path_node["textStyle"]["lineHeight"]);
+    let copy = tree.node("copy-settings-path");
+    assert_eq!(copy["role"], "button");
+    assert_eq!(
+        copy["focused"], true,
+        "the Copy path button was not reached"
+    );
+    let [path_x, _, path_w, _] = tree.rect("settings-path");
+    assert!(path_x + path_w <= tree.rect("copy-settings-path")[0]);
+    for key in [
+        "settings-path",
+        "copy-settings-path",
+        "settings-form",
+        "save",
+    ] {
+        tree.assert_in_bounds(key, window);
+    }
+    let form = tree.rect("settings-form");
+    for &(field, _) in COVERAGE[0].1 {
+        tree.assert_in_bounds(&format!("field-{field}"), form);
+    }
+    tree.assert_value("defaultProvider-input", "unsaved-provider");
+    assert_eq!(tree.node("save")["focusable"], true);
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), past);
 }
 
 #[test]

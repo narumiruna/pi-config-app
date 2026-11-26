@@ -11,13 +11,13 @@ sudo apt-get install libxkbcommon-dev libvulkan1 mesa-vulkan-drivers
 cargo run --locked
 ```
 
-The window shows the path it uses. If `PI_CODING_AGENT_DIR` is unset or empty, the app opens `~/.pi/agent/settings.json`. To use another directory:
+The window shows the settings path on one line. Click **Copy path** to get the full path. If `PI_CODING_AGENT_DIR` is unset or empty, the app opens `~/.pi/agent/settings.json`. To use another directory:
 
 ```sh
 PI_CODING_AGENT_DIR="$HOME/my-pi-agent" cargo run --locked
 ```
 
-Choose a settings group, edit one or more values, then click **Save**. You can switch groups without losing your edits. To remove an override, click **Clear** next to a text or number field or choose **Use Pi default** from a menu. For Markdown code block indent, **Set empty** saves an explicit empty string instead of using Pi's default indentation.
+Choose a settings group, edit one or more values, then click **Save**. Each group remembers its scroll position and pending edits when you switch groups. If an invalid value blocks saving, click **Go to field** to correct it. The **Appearance** group separates fullscreen preferences from other settings; they can be edited in any mode but only apply in fullscreen. To remove an override, click **Clear** next to a text or number field or choose **Use Pi default** from a menu. For Markdown code block indent, **Set empty** saves an explicit empty string instead of using Pi's default indentation.
 
 The first save creates a missing settings file. The app preserves unsupported values and unedited settings, including sibling values in nested objects. It does not open a `settings.json` symbolic link or overwrite a file it detects has changed since load. Use **Reload** to read it again.
 
