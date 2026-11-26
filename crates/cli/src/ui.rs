@@ -7,93 +7,93 @@ use rune_kit::{
 };
 use serde_json::Value;
 
+use crate::fields::{DEFAULT, FIELDS, GROUPS, Group, Input, Kind, Spec};
 use crate::settings::{Changes, SaveError, Settings, settings_path};
 
-const DEFAULT: &str = "Use Pi default";
 const UNSUPPORTED: &str = "Unsupported value";
-const THEME: &str = "theme";
-const THINKING: &str = "defaultThinkingLevel";
-const HIDE: &str = "hideThinkingBlock";
-const LEVELS: &[&str] = &[
-    DEFAULT, "off", "minimal", "low", "medium", "high", "xhigh", "max",
-];
-const VISIBILITY: &[&str] = &[DEFAULT, "Show", "Hide"];
+const FORM_SCROLL: &str = "settings-form";
 
-#[derive(Default)]
-enum Field<T> {
-    #[default]
-    Unset,
-    Value(T),
+enum Draft {
     Unsupported,
+    Choice(usize),
+    Input { edit: Box<TextEdit>, present: bool },
 }
 
-impl<T> Field<T> {
-    fn read(settings: &Settings, key: &str, decode: impl FnOnce(Value) -> Option<T>) -> Self {
-        match settings.raw(key) {
-            None => Self::Unset,
-            Some(raw) => serde_json::from_str(raw)
-                .ok()
-                .and_then(decode)
-                .map_or(Self::Unsupported, Self::Value),
-        }
-    }
-
-    fn value(&self) -> Option<&T> {
-        match self {
-            Self::Value(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    fn supported(&self) -> bool {
-        !matches!(self, Self::Unsupported)
-    }
+struct Field {
+    initial: Option<Value>,
+    draft: Draft,
 }
 
-#[derive(Default)]
-struct Fields {
-    theme: Field<String>,
-    thinking: Field<usize>,
-    hide: Field<usize>,
-}
-
-impl Fields {
-    fn read(settings: &Settings) -> Self {
-        Self {
-            theme: Field::read(settings, THEME, |value| match value {
-                Value::String(name) if !name.is_empty() && !name.contains(['\r', '\n']) => {
-                    Some(name)
+impl Field {
+    fn read(spec: &Spec, settings: &io::Result<Settings>) -> Self {
+        let initial = match settings {
+            Ok(settings) => match settings.value(spec.path) {
+                Ok(value) => value,
+                Err(_) => {
+                    return Self {
+                        initial: None,
+                        draft: Draft::Unsupported,
+                    };
                 }
-                _ => None,
-            }),
-            thinking: Field::read(settings, THINKING, |value| {
-                LEVELS
+            },
+            Err(_) => None,
+        };
+        let draft = match spec.kind {
+            Kind::Choice(options) => match initial.as_ref() {
+                None => Draft::Choice(0),
+                Some(value) => options
                     .iter()
-                    .enumerate()
-                    .skip(1)
-                    .find_map(|(i, &name)| (value.as_str() == Some(name)).then_some(i))
-            }),
-            hide: Field::read(settings, HIDE, |value| {
-                value.as_bool().map(|hide| if hide { 2 } else { 1 })
-            }),
+                    .position(|(_, atom)| &atom.value() == value)
+                    .map_or(Draft::Unsupported, |index| Draft::Choice(index + 1)),
+            },
+            Kind::Input(input) => match initial.as_ref() {
+                None => Draft::Input {
+                    edit: Box::default(),
+                    present: false,
+                },
+                Some(value) => {
+                    input
+                        .display(value)
+                        .map_or(Draft::Unsupported, |value| Draft::Input {
+                            edit: Box::new(TextEdit::new(value)),
+                            present: true,
+                        })
+                }
+            },
+        };
+        let initial = if matches!(draft, Draft::Unsupported) {
+            None
+        } else {
+            initial
+        };
+        Self { initial, draft }
+    }
+
+    fn value(&self, spec: &Spec) -> Result<Option<Value>, String> {
+        match (&self.draft, spec.kind) {
+            (Draft::Unsupported, _) => Ok(None),
+            (Draft::Choice(index), Kind::Choice(options)) => {
+                Ok(index.checked_sub(1).map(|i| options[i].1.value()))
+            }
+            (
+                Draft::Input {
+                    edit,
+                    present: true,
+                },
+                Kind::Input(input),
+            ) => input.parse(&edit.text),
+            (Draft::Input { present: false, .. }, Kind::Input(_)) => Ok(None),
+            _ => unreachable!("draft must match the field spec"),
         }
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Menu {
-    Thinking,
-    Hide,
 }
 
 pub struct Editor {
     path: Option<PathBuf>,
     settings: io::Result<Settings>,
-    initial: Fields,
-    theme: TextEdit,
-    thinking: usize,
-    hide: usize,
-    menu: Option<Menu>,
+    fields: Vec<Field>,
+    group: Group,
+    menu: Option<usize>,
     confirm_reload: bool,
     notice: Option<(bool, String)>,
 }
@@ -107,16 +107,21 @@ impl Editor {
         let mut editor = Self {
             path,
             settings,
-            initial: Fields::default(),
-            theme: TextEdit::default(),
-            thinking: 0,
-            hide: 0,
+            fields: Vec::new(),
+            group: Group::Models,
             menu: None,
             confirm_reload: false,
             notice: None,
         };
         editor.reload();
         editor
+    }
+
+    fn read_fields(&mut self) {
+        self.fields = FIELDS
+            .iter()
+            .map(|spec| Field::read(spec, &self.settings))
+            .collect();
     }
 
     fn reload(&mut self) {
@@ -126,38 +131,24 @@ impl Editor {
         if let Some(path) = &self.path {
             self.settings = Settings::load(path);
         }
-        self.initial = self.settings.as_ref().map(Fields::read).unwrap_or_default();
-        self.theme = TextEdit::new(self.initial.theme.value().cloned().unwrap_or_default());
-        self.thinking = self.initial.thinking.value().copied().unwrap_or(0);
-        self.hide = self.initial.hide.value().copied().unwrap_or(0);
+        self.read_fields();
     }
 
-    fn changes(&self) -> Changes {
+    fn changes(&self) -> Result<Changes, ()> {
         let mut changes = Changes::new();
-        let theme = self.theme.text.as_str();
-        if self.initial.theme.supported()
-            && theme != self.initial.theme.value().map_or("", String::as_str)
-        {
-            changes.insert(THEME, (!theme.is_empty()).then(|| Value::from(theme)));
+        for (spec, field) in FIELDS.iter().zip(&self.fields) {
+            let value = field.value(spec).map_err(|_| ())?;
+            if value != field.initial {
+                changes.insert(spec.path, value);
+            }
         }
-        if self.initial.thinking.supported()
-            && self.thinking != self.initial.thinking.value().copied().unwrap_or(0)
-        {
-            changes.insert(
-                THINKING,
-                (self.thinking != 0).then(|| Value::from(LEVELS[self.thinking])),
-            );
-        }
-        if self.initial.hide.supported()
-            && self.hide != self.initial.hide.value().copied().unwrap_or(0)
-        {
-            changes.insert(HIDE, (self.hide != 0).then(|| Value::from(self.hide == 2)));
-        }
-        changes
+        Ok(changes)
     }
 
     fn save(&mut self) {
-        let changes = self.changes();
+        let Ok(changes) = self.changes() else {
+            return;
+        };
         let (Some(path), Ok(settings)) = (&self.path, &mut self.settings) else {
             return;
         };
@@ -166,7 +157,7 @@ impl Editor {
         }
         self.notice = Some(match settings.save(path, changes) {
             Ok(()) => {
-                self.initial = Fields::read(settings);
+                self.read_fields();
                 (
                     false,
                     "Saved. Run /reload in an open Pi session to reload settings.".into(),
@@ -186,7 +177,10 @@ impl Editor {
         }
     }
 
-    fn status(&self, dirty: bool) -> (bool, String) {
+    fn status(&self, dirty: bool, invalid: bool) -> (bool, String) {
+        if invalid {
+            return (true, "Fix invalid settings before saving.".into());
+        }
         if let Some(notice) = &self.notice {
             return notice.clone();
         }
@@ -202,189 +196,222 @@ impl Editor {
     }
 }
 
-fn field_row(kit: &Kit, label: &'static str, hint: &'static str, control: El) -> El {
-    row()
-        .w_full()
-        .gap(16.0)
-        .center_y()
-        .py(12.0)
-        .child(
-            col()
-                .grow(1.0)
-                .min_w(0.0)
-                .gap(4.0)
-                .child(text(label).font(kit.ty.ui_medium).color(kit.c.text_strong))
-                .child(
-                    text(hint)
-                        .font(kit.ty.ui_compact)
-                        .color(kit.c.text_muted)
-                        .wrap()
-                        .w_full(),
-                ),
-        )
-        .child(control)
+fn focus_row(control: El, spec: &Spec) -> El {
+    let key = format!("field-{}", spec.path);
+    control.on_focus_change_any(move |focused, tx| {
+        if focused {
+            tx.scroll_into_view_in(FORM_SCROLL, &key);
+        }
+    })
 }
 
-fn menu(editor: &Editor, kit: &Kit, layer: &mut Vec<El>, kind: Menu, label: &'static str) -> El {
-    let (key, options, index, supported) = match kind {
-        Menu::Thinking => (
-            "thinking",
-            LEVELS,
-            editor.thinking,
-            editor.initial.thinking.supported(),
-        ),
-        Menu::Hide => (
-            "hide",
-            VISIBILITY,
-            editor.hide,
-            editor.initial.hide.supported(),
-        ),
+fn field_row(editor: &Editor, kit: &Kit, layer: &mut Vec<El>, index: usize, spec: &Spec) -> El {
+    let field = &editor.fields[index];
+    let unsupported = matches!(field.draft, Draft::Unsupported);
+    let disabled = editor.settings.is_err() || unsupported;
+    let issue = field.value(spec).err();
+    let id = spec.control_id();
+    let control = match spec.kind {
+        Kind::Choice(options) => {
+            let labels: Vec<_> = std::iter::once(DEFAULT)
+                .chain(options.iter().map(|&(label, _)| label))
+                .collect();
+            let current = match field.draft {
+                Draft::Choice(n) => labels[n],
+                _ => UNSUPPORTED,
+            };
+            focus_row(
+                Select::new(id, &labels)
+                    .label(spec.label)
+                    .current(Some(current))
+                    .width(230.0)
+                    .appearance(SelectAppearance::Field)
+                    .disabled(disabled)
+                    .open(editor.menu == Some(index))
+                    .on_toggle(move |s: &mut Editor| {
+                        s.menu = (s.menu != Some(index)).then_some(index)
+                    })
+                    .on_close(|s: &mut Editor| s.menu = None)
+                    .on_choose(move |s: &mut Editor, value, _| {
+                        if let Some(n) = labels.iter().position(|&label| label == value) {
+                            s.fields[index].draft = Draft::Choice(n);
+                            s.edit();
+                        }
+                        s.menu = None;
+                    })
+                    .build(kit, layer),
+                spec,
+            )
+        }
+        Kind::Input(input) => {
+            let blank = TextEdit::default();
+            let (edit, present) = match &field.draft {
+                Draft::Input { edit, present } => (edit.as_ref(), *present),
+                _ => (&blank, false),
+            };
+            let placeholder = if unsupported {
+                UNSUPPORTED
+            } else if present && matches!(input, Input::Text { allow_empty: true }) {
+                "Empty string"
+            } else {
+                DEFAULT
+            };
+            let input_control = TextInput::new(edit)
+                .label(spec.label)
+                .placeholder(placeholder)
+                .disabled(disabled)
+                .invalid(issue.is_some())
+                .width(None)
+                .on_edit(move |s: &mut Editor| match &mut s.fields[index].draft {
+                    Draft::Input { edit, .. } => edit,
+                    _ => unreachable!("only enabled inputs can be edited"),
+                })
+                .on_change(move |s: &mut Editor, _| {
+                    if let Draft::Input { present, .. } = &mut s.fields[index].draft {
+                        *present = true;
+                    }
+                    s.edit();
+                })
+                .build(kit)
+                .key(format!("{id}-input"))
+                .grow(1.0)
+                .min_w(0.0);
+            let set_empty =
+                matches!(input, Input::Text { allow_empty: true }) && !present && !disabled;
+            let action = Button::new(if set_empty { "Set empty" } else { "Clear" })
+                .help(if set_empty {
+                    "Set an explicit empty string"
+                } else {
+                    "Remove the setting and use Pi's default"
+                })
+                .disabled(disabled || (!present && !set_empty))
+                .on_press(move |s: &mut Editor| {
+                    s.fields[index].draft = Draft::Input {
+                        edit: Box::default(),
+                        present: set_empty,
+                    };
+                    s.edit();
+                })
+                .build(kit)
+                .key(format!(
+                    "{id}-{}",
+                    if set_empty { "empty" } else { "clear" }
+                ))
+                .press_on_return();
+            row()
+                .w(230.0)
+                .gap(8.0)
+                .center_y()
+                .child(focus_row(input_control, spec))
+                .child(focus_row(action, spec))
+        }
     };
-    Select::new(key, options)
-        .label(label)
-        .current(Some(if supported {
-            options[index]
-        } else {
-            UNSUPPORTED
-        }))
-        .width(210.0)
-        .appearance(SelectAppearance::Field)
-        .disabled(editor.settings.is_err() || !supported)
-        .open(editor.menu == Some(kind))
-        .on_toggle(move |s: &mut Editor| s.menu = (s.menu != Some(kind)).then_some(kind))
-        .on_close(|s: &mut Editor| s.menu = None)
-        .on_choose(move |s: &mut Editor, value, _| {
-            if let Some(index) = options.iter().position(|&option| option == value) {
-                match kind {
-                    Menu::Thinking => s.thinking = index,
-                    Menu::Hide => s.hide = index,
-                }
-                s.edit();
-            }
-            s.menu = None;
-        })
-        .build(kit, layer)
+    let mut title = col().grow(1.0).min_w(0.0).gap(4.0).child(
+        text(spec.label)
+            .font(kit.ty.ui_medium)
+            .color(kit.c.text_strong)
+            .wrap()
+            .w_full(),
+    );
+    if let Some(issue) = issue {
+        title = title.child(
+            text(issue)
+                .font(kit.ty.ui_compact)
+                .color(kit.c.danger.fg)
+                .wrap()
+                .w_full(),
+        );
+    } else if unsupported {
+        title = title.child(
+            text("Existing value is kept as-is")
+                .font(kit.ty.ui_compact)
+                .color(kit.c.text_muted)
+                .wrap()
+                .w_full(),
+        );
+    }
+    row()
+        .key(format!("field-{}", spec.path))
+        .w_full()
+        .gap(12.0)
+        .center_y()
+        .py(6.0)
+        .child(title)
+        .child(control)
 }
 
 pub fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
     let kit = Kit::neutral(cx.system_dark());
     let mut layer = Vec::new();
-    let ready = editor.settings.is_ok();
-    let dirty = !editor.changes().is_empty();
-    let (error, status) = editor.status(dirty);
-    let muted = kit.c.text_muted;
-    let strong = kit.c.text_strong;
-
-    let clear_theme = Button::new("Clear")
-        .help("Remove the theme setting and use Pi's default")
-        .disabled(!ready || !editor.initial.theme.supported() || editor.theme.text.is_empty())
-        .on_press(|s: &mut Editor| {
-            s.theme = TextEdit::default();
-            s.edit();
-        })
-        .build(&kit)
-        .key("theme-clear")
-        .press_on_return();
-    let theme = TextInput::new(&editor.theme)
-        .label("Theme")
-        .placeholder(if editor.initial.theme.supported() {
-            DEFAULT
-        } else {
-            UNSUPPORTED
-        })
-        .disabled(!ready || !editor.initial.theme.supported())
-        .width(None)
-        .on_edit(|s: &mut Editor| &mut s.theme)
-        .on_change(|s: &mut Editor, _| s.edit())
-        .build(&kit)
-        .key("theme-input")
-        .grow(1.0)
-        .min_w(0.0);
+    let changes = editor.changes();
+    let invalid = changes.is_err();
+    let dirty = !matches!(changes, Ok(changes) if changes.is_empty());
+    let (error, status) = editor.status(dirty, invalid);
     let path = editor.path.as_ref().map_or_else(
         || "Path unavailable".to_owned(),
         |path| path.display().to_string(),
     );
-    let content = col()
+    let navigation = GROUPS
+        .iter()
+        .fold(row().gap(6.0), |nav, &(group, label, key)| {
+            let active = editor.group == group;
+            nav.child(
+                Button::new(label)
+                    .variant(if active {
+                        ButtonVariant::Contrast
+                    } else {
+                        ButtonVariant::default()
+                    })
+                    .build(&kit)
+                    .key(key)
+                    .role("tab")
+                    .focus_selected(active)
+                    .on_press_tx(move |s: &mut Editor, tx| {
+                        if group != s.group {
+                            s.group = group;
+                            s.menu = None;
+                            tx.scroll_to_instant(FORM_SCROLL, 0.0, 0.0);
+                        }
+                    })
+                    .press_on_return(),
+            )
+        })
+        .role("tablist")
+        .label("Settings groups")
+        .focus_group();
+    let header = col()
         .w_full()
-        .padding(24.0)
-        .gap(20.0)
+        .px(20.0)
+        .py(12.0)
+        .gap(8.0)
         .child(
-            col()
-                .gap(6.0)
-                .w_full()
-                .child(
-                    text("Pi Config App")
-                        .role("heading")
-                        .font(TextStyle::new(26.0, 650.0))
-                        .color(strong),
-                )
-                .child(text("User settings").font(kit.ty.ui).color(muted)),
+            text("Pi Config App")
+                .role("heading")
+                .font(TextStyle::new(24.0, 650.0))
+                .color(kit.c.text_strong),
         )
         .child(
-            col()
-                .padding(14.0)
-                .gap(6.0)
-                .w_full()
-                .radius(8.0)
-                .fill(kit.c.layer_01)
-                .child(text("SETTINGS FILE").font(kit.ty.ui_compact).color(muted))
-                .child(
-                    text(path)
-                        .key("settings-path")
-                        .font(kit.ty.ui)
-                        .color(strong)
-                        .wrap_anywhere()
-                        .w_full()
-                        .selectable(true),
-                ),
+            text("USER SETTINGS FILE")
+                .font(kit.ty.ui_compact)
+                .color(kit.c.text_muted),
         )
         .child(
-            col()
-                .px(14.0)
+            text(path)
+                .key("settings-path")
+                .font(kit.ty.ui)
+                .color(kit.c.text_strong)
+                .wrap_anywhere()
                 .w_full()
-                .radius(8.0)
-                .fill(kit.c.layer_01)
-                .child(field_row(
-                    &kit,
-                    "Theme",
-                    if editor.initial.theme.supported() {
-                        "Built-in or custom theme name"
-                    } else {
-                        "Existing value is kept as-is"
-                    },
-                    row()
-                        .w(210.0)
-                        .gap(8.0)
-                        .center_y()
-                        .child(theme)
-                        .child(clear_theme),
-                ))
-                .child(field_row(
-                    &kit,
-                    "Default thinking level",
-                    if editor.initial.thinking.supported() {
-                        "Thinking level for new Pi sessions"
-                    } else {
-                        "Existing value is kept as-is"
-                    },
-                    menu(
-                        editor,
-                        &kit,
-                        &mut layer,
-                        Menu::Thinking,
-                        "Default thinking level",
-                    ),
-                ))
-                .child(field_row(
-                    &kit,
-                    "Thinking block",
-                    if editor.initial.hide.supported() {
-                        "Show or hide thinking in the transcript"
-                    } else {
-                        "Existing value is kept as-is"
-                    },
-                    menu(editor, &kit, &mut layer, Menu::Hide, "Thinking block"),
-                )),
+                .selectable(true),
+        )
+        .child(navigation);
+    let fields = FIELDS
+        .iter()
+        .enumerate()
+        .filter(|(_, spec)| spec.group == editor.group)
+        .fold(
+            col().w_full().px(14.0).radius(8.0).fill(kit.c.layer_01),
+            |rows, (i, spec)| rows.child(field_row(editor, &kit, &mut layer, i, spec)),
         );
 
     Dialog::new("confirm-reload", "Discard unsaved changes?")
@@ -420,20 +447,22 @@ pub fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
         .w_full()
         .h_full()
         .fill(kit.c.bg_base)
+        .child(header)
         .child(
             col()
+                .key(FORM_SCROLL)
                 .grow(1.0)
                 .min_h(0.0)
                 .w_full()
                 .scroll(ScrollSpec::default())
-                .child(content),
+                .child(col().w_full().px(20.0).pb(10.0).child(fields)),
         )
         .child(
             col()
                 .w_full()
-                .px(24.0)
-                .py(14.0)
-                .gap(12.0)
+                .px(20.0)
+                .py(12.0)
+                .gap(8.0)
                 .fill(kit.c.layer_01)
                 .child(
                     text(status)
@@ -441,7 +470,11 @@ pub fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
                         .font(kit.ty.ui)
                         .wrap()
                         .w_full()
-                        .color(if error { kit.c.danger.fg } else { muted })
+                        .color(if error {
+                            kit.c.danger.fg
+                        } else {
+                            kit.c.text_muted
+                        })
                         .live_region(if error {
                             LiveRegion::Assertive
                         } else {
@@ -456,12 +489,9 @@ pub fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
                             Button::new("Reload")
                                 .control_size(ControlSize::Large)
                                 .disabled(editor.path.is_none())
-                                .on_press(|s: &mut Editor| {
-                                    if s.changes().is_empty() {
-                                        s.reload();
-                                    } else {
-                                        s.confirm_reload = true;
-                                    }
+                                .on_press(|s: &mut Editor| match s.changes() {
+                                    Ok(changes) if changes.is_empty() => s.reload(),
+                                    _ => s.confirm_reload = true,
                                 })
                                 .build(&kit)
                                 .key("reload")
@@ -471,7 +501,7 @@ pub fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
                             Button::new("Save")
                                 .control_size(ControlSize::Large)
                                 .variant(ButtonVariant::Contrast)
-                                .disabled(!ready || !dirty)
+                                .disabled(editor.settings.is_err() || !dirty || invalid)
                                 .on_press(Editor::save)
                                 .build(&kit)
                                 .key("save")

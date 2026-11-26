@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod fields;
 mod settings;
 mod ui;
 

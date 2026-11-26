@@ -1,6 +1,6 @@
 # Pi Config App：桌面設定編輯器
 
-狀態：第一版已實作，並在 Linux 驗證。[Rune](https://github.com/anomalyco/rune) 原生桌面程式只處理 Pi 的使用者層級 `settings.json`。使用方式見 [README](../../README.md)。
+[Rune](https://github.com/anomalyco/rune) 原生桌面程式只處理 Pi 的使用者層級 `settings.json`。第一版可編輯三個欄位；目前範圍見[可編輯欄位](#可編輯欄位)，操作方式見 [README](../../README.md)。
 
 ## 問題
 
@@ -16,27 +16,34 @@
 | 需求 | 驗收方式 |
 | --- | --- |
 | **R1：找到設定檔。** 啟動時讀取程式收到的 `PI_CODING_AGENT_DIR`。變數未設定或為空時使用 `~/.pi/agent/`；支援 `~/` 開頭的路徑，相對路徑以啟動時的工作目錄為準。視窗顯示實際讀寫的 `settings.json` 路徑。自訂路徑讀取失敗時，不改讀預設路徑。 | 在測試用家目錄與自訂目錄放入不同的設定值，分別用未設定、空值、絕對路徑、`~/` 路徑和相對路徑啟動，核對畫面路徑及載入值。讓自訂路徑無法讀取，確認顯示的是該路徑的錯誤。 |
-| **R2：用表單編輯。** 依下表顯示三個欄位。未設定的欄位顯示「使用 Pi 預設」；使用者也可清除欄位以恢復預設。若既有值不屬於表單支援的類型或選項，標示為不支援並保留該值，不影響其他欄位。 | 載入含自訂主題、未設定欄位及表單不支援的值的檔案。修改一個支援的欄位並儲存，確認只有該欄位改變。清除一個已設定的欄位，確認只移除對應的 JSON 鍵。 |
+| **R2：用表單編輯。** 依「可編輯欄位」分組顯示表單，切換群組不會清除編輯。未設定的欄位顯示「使用 Pi 預設」；使用者也可清除欄位以恢復預設。若既有值不屬於表單支援的類型或選項，標示為不支援並保留該值，不影響其他欄位。 | 載入含自訂主題、未設定欄位及表單不支援的值的檔案。修改一個支援的欄位並儲存，確認只有該欄位改變。清除一個已設定的欄位，確認只移除對應的 JSON 鍵。 |
 | **R3：明確儲存。** 只有使用者按「儲存」才寫檔；沒有變更時不寫檔。保留所有未編輯的鍵和值，包括巢狀值；縮排與鍵順序可以改變。成功後提示：已開啟的 Pi 可使用 `/reload` 重新載入。 | 修改後不儲存就關閉視窗，確認檔案不變。儲存後重新開啟 App，確認修改仍在；比對儲存前後的 JSON，確認其他鍵和值不變，也沒有補寫預設值。 |
 | **R4：區分缺檔與讀取失敗。** 檔案不存在時顯示「尚未建立」，只在第一次儲存變更時建立所需目錄與檔案。若 JSON 無效、最外層不是物件或檔案無法讀取，顯示路徑和原因，不允許儲存覆蓋；修正後可重新讀取。 | 分別測試缺檔、壞掉的 JSON、JSON 陣列、讀取權限不足。只允許缺檔情境建立新檔；其餘情境的原檔不得變動。 |
 | **R5：避免覆蓋外部變更或寫入半份檔案。** 儲存前若發現檔案自載入後被修改、建立或刪除，停止寫入並提示重新讀取。重新讀取會捨棄未儲存變更，須先確認。若寫入失敗，保留原檔與畫面中的編輯，並顯示失敗原因。 | 開啟 App 後用另一個程式更改、建立或刪除目標檔，再按「儲存」，確認不覆蓋外部變更。另模擬寫入失敗，確認原檔未被截斷、表單修改仍在。 |
 | **R6：設定留在本機。** 程式不讀取憑證、不執行設定檔中的命令，也不上傳設定。 | 在離線環境完成讀取、修改與儲存；確認只變更目標設定檔，不存取 `auth.json` 或專案設定。 |
 
-### 第一版可編輯欄位
+## 可編輯欄位
 
-依 [Pi Settings Reference](https://docs.pi.dev/latest/settings) 定義欄位。這些是 Pi 的偏好，不是 App 自己的外觀或行為。
+以 Pi 1.6.0 的 61 個頂層 schema 鍵為分母。可設定及清除的鍵計一次；物件須涵蓋 schema 定義的所有子欄位才計入。覆蓋率由第一版的 3/61（4.9%）提高至 24/61（39.3%），共 32 個可編輯欄位。這些是 Pi 的偏好，不是 App 本身的設定。
 
-| JSON 鍵 | 介面 | Pi 預設 |
-| --- | --- | --- |
-| `theme` | 主題名稱文字欄，接受內建或自訂名稱 | `system` |
-| `defaultThinkingLevel` | 選單：`off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` | `medium` |
-| `hideThinkingBlock` | 選單：顯示、隱藏、使用 Pi 預設 | `false`（顯示） |
+| 群組 | JSON 鍵 |
+| --- | --- |
+| Models | `defaultProvider`、`defaultModel`、`defaultThinkingLevel`、`hideThinkingBlock`、`showCacheMissNotices` |
+| Interaction | `steeringMode`、`followUpMode`、`doubleEscapeAction`、`treeFilterMode` |
+| Appearance | `theme`、`quietStartup`、`tuiMode`、`fullscreenExitOutput`、`fullscreenScrollbar`、`fullscreenCopyOnSelect`、`fullscreenWheelScrollLines`、`editorPaddingX`、`outputPad`、`autocompleteMaxVisible`、`showHardwareCursor` |
+| Appearance（巢狀） | `terminal.showImages`、`terminal.imageWidthCells`、`terminal.clearOnShrink`、`terminal.showTerminalProgress`、`terminal.hyperlinks`、`terminal.images`、`terminal.trueColor`、`images.autoResize`、`images.blockImages`、`markdown.codeBlockIndent`、`markdown.mermaid` |
+| Updates | `collapseChangelog` |
+
+- 選單用 **Use Pi default** 清除明確設定。文字和數字欄位用 **Clear**；Markdown 縮排另可用 **Set empty** 設為空字串，不同於使用 Pi 預設。
+- 數字欄位接受整數：`editorPaddingX` 為 0–3，`autocompleteMaxVisible` 為 3–20，`fullscreenWheelScrollLines` 為 1–100 或 `auto`，`terminal.imageWidthCells` 為 1–9007199254740991。不合法的編輯無法儲存；不支援的既有值會保留。
+- 編輯巢狀欄位只會改變指定的鍵。儲存時保留同一物件內未編輯的值；清除最後一個子欄位時保留空物件。若原值不是物件，保留原值並停用該物件的欄位。
+- Provider 和 model ID 可直接輸入；App 不會連線驗證。設定只寫入使用者檔案，不會立即套用至 Pi。專案可覆寫使用者設定，部分啟動設定須重新啟動 Pi。
 
 ## Pi `settings.json` 完整選項清單
 
 ### 研究版本與範圍
 
-本節依本機安裝的 `@earendil-works/pi-coding-agent` **1.6.0**，核對上游 `v1.6.0` 的 TypeScript 原始碼，commit 為 `faac585884ae2c013a6b1400f3e9e77f10b34bac`。不是只依 `/settings` 選單列舉，也不代表 App 已提供這些欄位的編輯介面；第一版仍只編輯前述三個欄位。
+本節依本機安裝的 `@earendil-works/pi-coding-agent` **1.6.0**，核對上游 `v1.6.0` 的 TypeScript 原始碼，commit 為 `faac585884ae2c013a6b1400f3e9e77f10b34bac`。不是只依 `/settings` 選單列舉。此清單包含未提供編輯介面的鍵；App 的範圍以前一節為準。
 
 研究依據：
 
@@ -186,7 +193,7 @@ Compaction 的安全整數範圍是 `0` 至 `9007199254740991`。兩個 token �
 - 資源清單支援 `!pattern` 排除 glob、`+path` 精確加入、`-path` 精確排除；使用者與專案的資源會一起載入，不能把所有陣列都當成「專案整份取代」。
 - 同一 package 的身分按 npm package name、去除 ref 的 git repository URL 或本機絕對路徑判定。一般由專案宣告優先；`autoload: false` 的專案項目可作為使用者宣告的篩選差異。Package filters 不能載入 package manifest 未允許的資源。
 - `extensions` 可指定 `builtin:mcp`、`builtin:llama.cpp`、`builtin:codemode`、`builtin:tool-search`；它們預設載入。`-builtin:<name>` 停用指定項目，專案的 `+builtin:<name>`／`-builtin:<name>` 優先於使用者設定。載入 extension 不代表它提供的所有工具都已啟用。
-- 第一版 App 只保留這些資源設定，不安裝 packages、不載入 extensions，也不執行其中的程式碼或命令。
+- App 只保留這些資源設定，不安裝 packages、不載入 extensions，也不執行其中的程式碼或命令。
 
 ### 更新資訊、telemetry 與警告
 

@@ -26,6 +26,48 @@ pub fn settings_path() -> io::Result<PathBuf> {
     Ok(std::path::absolute(dir)?.join("settings.json"))
 }
 
+fn read_object(raw: &str) -> io::Result<Document> {
+    if !raw.trim_start().starts_with('{') {
+        return Err(io::Error::other("Expected a JSON object"));
+    }
+    serde_json::from_str(raw).map_err(io::Error::other)
+}
+
+fn apply_changes(original: &Document, changes: Changes) -> io::Result<Document> {
+    let mut document = original.clone();
+    let mut nested = BTreeMap::<&str, Document>::new();
+    for (path, value) in changes {
+        let (object, key) = if let Some((root, leaf)) = path.split_once('.') {
+            if value.is_none() && !original.contains_key(root) && !nested.contains_key(root) {
+                continue;
+            }
+            let parent = match nested.entry(root) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    let parent = original
+                        .get(root)
+                        .map_or_else(|| Ok(Document::new()), |raw| read_object(raw.get()))?;
+                    entry.insert(parent)
+                }
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            };
+            (parent, leaf)
+        } else {
+            (&mut document, path)
+        };
+        if let Some(value) = value {
+            let raw = serde_json::value::to_raw_value(&value).map_err(io::Error::other)?;
+            object.insert(key.into(), raw);
+        } else {
+            object.remove(key);
+        }
+    }
+    for (root, parent) in nested {
+        let raw = serde_json::value::to_raw_value(&parent).map_err(io::Error::other)?;
+        document.insert(root.into(), raw);
+    }
+    Ok(document)
+}
+
 struct FileVersion {
     bytes: Vec<u8>,
     meta: Option<Metadata>,
@@ -121,8 +163,23 @@ impl Settings {
         self.source.is_none()
     }
 
-    pub fn raw(&self, key: &str) -> Option<&str> {
-        self.document.get(key).map(|value| value.get())
+    pub fn value(&self, path: &str) -> io::Result<Option<serde_json::Value>> {
+        let decode = |raw: &RawValue| serde_json::from_str(raw.get()).map_err(io::Error::other);
+        if let Some((root, leaf)) = path.split_once('.') {
+            let Some(raw) = self.document.get(root) else {
+                return Ok(None);
+            };
+            return read_object(raw.get())?
+                .get(leaf)
+                .map(Box::as_ref)
+                .map(decode)
+                .transpose();
+        }
+        self.document
+            .get(path)
+            .map(Box::as_ref)
+            .map(decode)
+            .transpose()
     }
 
     pub fn save(&mut self, path: &Path, changes: Changes) -> Result<(), SaveError> {
@@ -130,18 +187,7 @@ impl Settings {
             return Ok(());
         }
         self.check_version(path)?;
-        let mut document = self.document.clone();
-        for (key, value) in changes {
-            match value {
-                Some(value) => {
-                    let raw = serde_json::value::to_raw_value(&value).map_err(io::Error::other)?;
-                    document.insert(key.into(), raw);
-                }
-                None => {
-                    document.remove(key);
-                }
-            }
-        }
+        let document = apply_changes(&self.document, changes)?;
         let mut bytes = serde_json::to_vec_pretty(&document).map_err(io::Error::other)?;
         bytes.push(b'\n');
         let parent = path.parent().expect("settings path has a directory");
