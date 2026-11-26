@@ -43,6 +43,12 @@ impl Fixture {
         self.prepare(agent_dir, script).finish()
     }
 
+    fn run_tall(&self, script: Script) -> Tree {
+        let mut run = self.prepare(None, script);
+        run.command.args(["--size", "900x1700"]);
+        run.finish()
+    }
+
     fn prepare(&self, agent_dir: Option<&Path>, script: Script) -> Run {
         let mut command = Command::new(EXE);
         let files = tempdir_in(&self.root).unwrap();
@@ -144,10 +150,25 @@ impl Script {
         self.event(json!({"type": "tap", "key": key}));
     }
 
-    fn replace_theme(&mut self, value: &str) {
-        self.tap("theme-input");
+    fn in_group(group: &str) -> Self {
+        let mut script = Self::default();
+        script.group(group);
+        script
+    }
+
+    fn group(&mut self, group: &str) {
+        self.tap(&format!("group-{group}"));
+    }
+
+    fn replace_input(&mut self, key: &str, value: &str) {
+        self.tap(&format!("{key}-input"));
         self.event(json!({"type": "key", "name": "a", "cmd": true}));
         self.event(json!({"paste": value}));
+    }
+
+    fn replace_theme(&mut self, value: &str) {
+        self.group("appearance");
+        self.replace_input("theme", value);
     }
 
     fn select(&mut self, key: &str, option: usize) {
@@ -179,7 +200,7 @@ impl Tree {
     fn node(&self, key: &str) -> &Value {
         self.elements()
             .iter()
-            .find(|e| e["key"] == key)
+            .find(|e| e["key"] == key && e["exiting"] != true)
             .unwrap_or_else(|| panic!("no {key:?} in UI: {self:#?}"))
     }
 
@@ -187,10 +208,11 @@ impl Tree {
         let path = self.node(key)["path"].as_str().unwrap();
         self.elements().iter().filter(move |e| {
             let child = e["path"].as_str().unwrap();
-            child == path
-                || child
-                    .strip_prefix(path)
-                    .is_some_and(|suffix| suffix.starts_with('/'))
+            e["exiting"] != true
+                && (child == path
+                    || child
+                        .strip_prefix(path)
+                        .is_some_and(|suffix| suffix.starts_with('/')))
         })
     }
 
@@ -231,6 +253,18 @@ impl Tree {
     fn assert_save_disabled(&self) {
         assert_eq!(self.node("save")["focusable"], false, "Save is enabled");
     }
+
+    fn assert_row_message(&self, path: &str, message: &str) {
+        let row = format!("field-{path}");
+        let texts: Vec<_> = self
+            .subtree(&row)
+            .filter_map(|e| e["text"].as_str())
+            .collect();
+        assert!(
+            texts.iter().any(|text| text.contains(message)),
+            "missing {message:?} in {row}: {texts:?}"
+        );
+    }
 }
 
 fn write(path: &Path, contents: impl AsRef<[u8]>) {
@@ -246,6 +280,493 @@ fn program_attempts_save() -> Script {
     let mut script = Script::default();
     script.tap("save");
     script
+}
+
+#[derive(Clone, Copy)]
+enum Override {
+    Text(&'static str),
+    Number(u64),
+    // Option index, displayed label, and the literal JSON token expected on disk.
+    Choice(usize, &'static str, &'static str),
+}
+
+use Override::{Choice, Number, Text};
+
+type Case = (&'static str, Override);
+
+// Independent inventory from the coverage plan, not imported from the application's field list.
+const COVERAGE: &[(&str, &[Case])] = &[
+    (
+        "models",
+        &[
+            ("defaultProvider", Text("local-provider")),
+            ("defaultModel", Text("local/model-v2")),
+            ("defaultThinkingLevel", Choice(5, "high", r#""high""#)),
+            ("hideThinkingBlock", Choice(2, "Hide", "true")),
+            ("showCacheMissNotices", Choice(1, "On", "true")),
+        ],
+    ),
+    (
+        "interaction",
+        &[
+            ("steeringMode", Choice(1, "all", r#""all""#)),
+            (
+                "followUpMode",
+                Choice(2, "one-at-a-time", r#""one-at-a-time""#),
+            ),
+            ("doubleEscapeAction", Choice(2, "fork", r#""fork""#)),
+            ("treeFilterMode", Choice(3, "user-only", r#""user-only""#)),
+        ],
+    ),
+    (
+        "appearance",
+        &[
+            ("theme", Text("light/custom-dark")),
+            ("quietStartup", Choice(3, "Header only", r#""header""#)),
+            ("tuiMode", Choice(1, "regular", r#""regular""#)),
+            (
+                "fullscreenExitOutput",
+                Choice(2, "resume-hint", r#""resume-hint""#),
+            ),
+            ("fullscreenScrollbar", Choice(2, "always", r#""always""#)),
+            ("fullscreenCopyOnSelect", Choice(2, "Off", "false")),
+            ("fullscreenWheelScrollLines", Text("auto")),
+            ("editorPaddingX", Number(0)),
+            ("outputPad", Choice(1, "0", "0")),
+            ("autocompleteMaxVisible", Number(20)),
+            ("showHardwareCursor", Choice(1, "On", "true")),
+            ("terminal.showImages", Choice(2, "Off", "false")),
+            ("terminal.imageWidthCells", Number(72)),
+            ("terminal.clearOnShrink", Choice(1, "On", "true")),
+            ("terminal.showTerminalProgress", Choice(1, "On", "true")),
+            ("terminal.hyperlinks", Choice(3, "auto", r#""auto""#)),
+            ("terminal.images", Choice(4, "Off", "false")),
+            ("terminal.trueColor", Choice(3, "auto", r#""auto""#)),
+            ("images.autoResize", Choice(2, "Off", "false")),
+            ("images.blockImages", Choice(1, "On", "true")),
+            ("markdown.codeBlockIndent", Text("")),
+            ("markdown.mermaid", Choice(2, "final", r#""final""#)),
+        ],
+    ),
+    ("updates", &[("collapseChangelog", Choice(1, "On", "true"))]),
+];
+
+fn control_key(path: &str) -> &str {
+    match path {
+        "defaultThinkingLevel" => "thinking",
+        "hideThinkingBlock" => "hide",
+        _ => path,
+    }
+}
+
+impl Override {
+    fn enter(self, script: &mut Script, path: &str) {
+        let key = control_key(path);
+        match self {
+            Text("") => script.tap(&format!("{key}-empty")),
+            Text(value) => script.replace_input(key, value),
+            Number(value) => script.replace_input(key, &value.to_string()),
+            Choice(index, _, _) => script.select(key, index),
+        }
+    }
+
+    fn reset(self, script: &mut Script, path: &str) {
+        let key = control_key(path);
+        match self {
+            Choice(..) => script.select(key, 0),
+            Text(_) | Number(_) => script.tap(&format!("{key}-clear")),
+        }
+    }
+
+    fn json(self) -> Value {
+        match self {
+            Text(value) => json!(value),
+            Number(value) => json!(value),
+            Choice(_, _, token) => serde_json::from_str(token).unwrap(),
+        }
+    }
+
+    fn selector(self, path: &str) -> String {
+        let suffix = match self {
+            Choice(..) => "trigger",
+            Text(_) | Number(_) => "input",
+        };
+        format!("{}-{suffix}", control_key(path))
+    }
+
+    fn assert_loaded(self, tree: &Tree, path: &str) {
+        let selector = self.selector(path);
+        match self {
+            Text(label) | Choice(_, label, _) => {
+                tree.assert_value(&selector, label);
+                if label.is_empty() {
+                    // An explicit empty override can be cleared, unlike an unset input.
+                    assert_eq!(tree.node(&format!("{path}-clear"))["focusable"], true);
+                }
+            }
+            Number(value) => tree.assert_value(&selector, &value.to_string()),
+        }
+    }
+
+    fn assert_default(self, tree: &Tree, path: &str) {
+        let selector = self.selector(path);
+        match self {
+            Choice(..) => {
+                assert_eq!(tree.node(&selector)["focusable"], true, "{selector}");
+                tree.assert_value(&selector, DEFAULT);
+            }
+            Text(_) | Number(_) => {
+                assert!(
+                    tree.subtree(&selector).any(|node| {
+                        node["role"] == "textbox" && node["focusable"] == true && node["text"] == ""
+                    }),
+                    "{selector} should be blank and editable"
+                );
+                let (action, enabled) = if matches!(self, Text("")) {
+                    ("empty", true)
+                } else {
+                    ("clear", false)
+                };
+                assert_eq!(
+                    tree.node(&format!("{path}-{action}"))["focusable"],
+                    enabled,
+                    "{path}"
+                );
+            }
+        }
+    }
+}
+
+fn record_override(document: &mut Value, path: &str, value: Override) {
+    if let Some((parent, leaf)) = path.split_once('.') {
+        document[parent][leaf] = value.json();
+    } else {
+        document[path] = value.json();
+    }
+}
+
+fn assert_field_inventory(tree: &Tree, fields: &[Case]) {
+    let mut expected: Vec<_> = fields.iter().map(|&(path, _)| path).collect();
+    let mut actual: Vec<_> = tree
+        .elements()
+        .iter()
+        .filter(|e| e["exiting"] != true)
+        .filter_map(|e| e["key"].as_str()?.strip_prefix("field-"))
+        .collect();
+    expected.sort_unstable();
+    actual.sort_unstable();
+    assert_eq!(actual, expected, "each editable path needs exactly one row");
+    for &(path, value) in fields {
+        let selector = value.selector(path);
+        assert!(
+            tree.subtree(&format!("field-{path}"))
+                .any(|element| element["key"] == selector),
+            "{selector} is not in the row for {path}"
+        );
+    }
+}
+
+#[test]
+fn sets_reopens_and_resets_every_setting_across_all_groups() {
+    let f = Fixture::new();
+    let path = f.settings();
+    let mut expected = json!({});
+    let mut set = Script::default();
+    let mut reset = Script::default();
+    for &(group, fields) in COVERAGE {
+        set.group(group);
+        reset.group(group);
+        for &(path, value) in fields {
+            value.enter(&mut set, path);
+            value.reset(&mut reset, path);
+            record_override(&mut expected, path, value);
+        }
+    }
+    assert_eq!(
+        COVERAGE
+            .iter()
+            .map(|(_, fields)| fields.len())
+            .sum::<usize>(),
+        32
+    );
+    assert_eq!(expected.as_object().unwrap().len(), 24);
+
+    set.tap("save");
+    let saved = f.run_tall(set);
+    saved.assert_message("/reload");
+    saved.assert_save_disabled();
+    assert_eq!(read_json(&path), expected);
+
+    for &(group, fields) in COVERAGE {
+        let script = if group == "models" {
+            Script::default() // Models must be the initial group.
+        } else {
+            Script::in_group(group)
+        };
+        let reopened = f.run_tall(script);
+        assert_field_inventory(&reopened, fields);
+        for &(path, value) in fields {
+            value.assert_loaded(&reopened, path);
+        }
+        reopened.assert_save_disabled();
+    }
+
+    reset.tap("save");
+    f.run_tall(reset).assert_message("/reload");
+    assert_eq!(
+        read_json(&path),
+        json!({"terminal": {}, "images": {}, "markdown": {}})
+    );
+    for &(group, fields) in COVERAGE {
+        let reopened = f.run_tall(Script::in_group(group));
+        for &(path, value) in fields {
+            value.assert_default(&reopened, path);
+        }
+        reopened.assert_save_disabled();
+    }
+}
+
+#[test]
+fn switching_groups_keeps_pending_edits_without_writing_or_creating_a_parent() {
+    let f = Fixture::new();
+    let path = f.settings();
+    let original = r#"{ "unrelated" : [1,null] }"#;
+    write(&path, original);
+
+    let mut script = Script::in_group("appearance");
+    script.select("terminal.showImages", 2);
+    script.group("updates");
+    script.select("collapseChangelog", 1);
+    script.group("appearance");
+    let tree = f.run_tall(script);
+    tree.assert_value("terminal.showImages-trigger", "Off");
+    assert_eq!(tree.node("save")["focusable"], true);
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
+fn mixed_choices_store_the_correct_json_types() {
+    let f = Fixture::new();
+    let path = f.settings();
+    let mut expected = json!({});
+    for choices in [
+        &[
+            ("quietStartup", Choice(1, "Hide startup", "true")),
+            ("terminal.hyperlinks", Choice(1, "On", "true")),
+            ("terminal.images", Choice(1, "kitty", r#""kitty""#)),
+            ("terminal.trueColor", Choice(1, "On", "true")),
+            ("outputPad", Choice(2, "1", "1")),
+        ][..],
+        &[
+            ("quietStartup", Choice(2, "Show startup", "false")),
+            ("terminal.hyperlinks", Choice(2, "Off", "false")),
+            ("terminal.images", Choice(2, "iterm2", r#""iterm2""#)),
+            ("terminal.trueColor", Choice(2, "Off", "false")),
+        ][..],
+        &[("terminal.images", Choice(3, "auto", r#""auto""#))][..],
+    ] {
+        let mut script = Script::in_group("appearance");
+        for &(path, value) in choices {
+            value.enter(&mut script, path);
+            record_override(&mut expected, path, value);
+        }
+        script.tap("save");
+        f.run_tall(script).assert_message("/reload");
+        assert_eq!(read_json(&path), expected);
+        let reopened = f.run_tall(Script::in_group("appearance"));
+        for &(path, value) in choices {
+            value.assert_loaded(&reopened, path);
+        }
+    }
+}
+
+#[test]
+fn numeric_inputs_accept_both_inclusive_boundaries() {
+    let f = Fixture::new();
+    let path = f.settings();
+    let boundaries = [
+        ("editorPaddingX", 0, 3),
+        ("autocompleteMaxVisible", 3, 20),
+        ("fullscreenWheelScrollLines", 1, 100),
+        ("terminal.imageWidthCells", 1, 9_007_199_254_740_991),
+    ];
+    for use_max in [false, true] {
+        let mut script = Script::in_group("appearance");
+        let mut expected = json!({});
+        for (field, min, max) in boundaries {
+            let value = Number(if use_max { max } else { min });
+            value.enter(&mut script, field);
+            record_override(&mut expected, field, value);
+        }
+        script.tap("save");
+        f.run_tall(script).assert_message("/reload");
+        assert_eq!(read_json(&path), expected);
+        let reopened = f.run_tall(Script::in_group("appearance"));
+        for (field, min, max) in boundaries {
+            Number(if use_max { max } else { min }).assert_loaded(&reopened, field);
+        }
+    }
+}
+
+#[test]
+fn invalid_numeric_edits_explain_the_error_and_block_other_pending_edits() {
+    let f = Fixture::new();
+    let path = f.settings();
+    let original = r#"{ "defaultProvider" : "old-provider", "terminal": {"imageWidthCells": 60} }"#;
+    write(&path, original);
+    for (field, invalid, explanation) in [
+        ("editorPaddingX", "-1", "whole number from 0 to 3"),
+        ("editorPaddingX", "4", "whole number from 0 to 3"),
+        ("editorPaddingX", "1.5", "whole number from 0 to 3"),
+        ("autocompleteMaxVisible", "2", "whole number from 3 to 20"),
+        ("autocompleteMaxVisible", "21", "whole number from 3 to 20"),
+        (
+            "fullscreenWheelScrollLines",
+            "0",
+            "auto or a whole number from 1 to 100",
+        ),
+        (
+            "fullscreenWheelScrollLines",
+            "101",
+            "auto or a whole number from 1 to 100",
+        ),
+        (
+            "fullscreenWheelScrollLines",
+            "many",
+            "auto or a whole number from 1 to 100",
+        ),
+        (
+            "terminal.imageWidthCells",
+            "0",
+            "whole number from 1 to 9007199254740991",
+        ),
+        (
+            "terminal.imageWidthCells",
+            "9007199254740992",
+            "whole number from 1 to 9007199254740991",
+        ),
+    ] {
+        let mut script = Script::default();
+        script.replace_input("defaultProvider", "new-provider");
+        script.group("appearance");
+        script.replace_input(field, invalid);
+        script.tap("save");
+        let tree = f.run_tall(script);
+        tree.assert_value(&format!("{field}-input"), invalid);
+        tree.assert_row_message(field, explanation);
+        tree.assert_save_disabled();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            original,
+            "{field}={invalid}"
+        );
+    }
+}
+
+#[test]
+fn can_correct_or_reset_invalid_input_after_switching_groups() {
+    let f = Fixture::new();
+    let path = f.settings();
+    let original = r#"{"editorPaddingX": 1, "unrelated": true}"#;
+    write(&path, original);
+    let with_invalid_edit = || {
+        let mut script = Script::in_group("appearance");
+        script.replace_input("editorPaddingX", "4");
+        script.group("models");
+        script.replace_input("defaultModel", "local/next-model");
+        script
+    };
+
+    let mut script = with_invalid_edit();
+    script.tap("save");
+    let tree = f.run_tall(script);
+    tree.assert_value("defaultModel-input", "local/next-model");
+    tree.assert_save_disabled();
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    let mut script = with_invalid_edit();
+    script.group("appearance");
+    script.replace_input("editorPaddingX", "2");
+    script.tap("save");
+    f.run_tall(script).assert_message("/reload");
+    assert_eq!(
+        read_json(&path),
+        json!({
+            "editorPaddingX": 2, "unrelated": true, "defaultModel": "local/next-model"
+        })
+    );
+
+    let mut script = Script::in_group("appearance");
+    script.replace_input("editorPaddingX", "4");
+    script.tap("editorPaddingX-clear");
+    script.tap("save");
+    f.run_tall(script).assert_message("/reload");
+    assert_eq!(
+        read_json(&path),
+        json!({"unrelated": true, "defaultModel": "local/next-model"})
+    );
+}
+
+fn raw_members(object: &str) -> BTreeMap<String, String> {
+    serde_json::from_str::<BTreeMap<String, Box<RawValue>>>(object)
+        .unwrap()
+        .into_iter()
+        .map(|(name, value)| (name, value.get().to_owned()))
+        .collect()
+}
+
+#[test]
+fn nested_edits_preserve_raw_siblings_unsupported_values_and_unsupported_parents() {
+    let f = Fixture::new();
+    let path = f.settings();
+    let original = r#"{
+        "terminal": {
+            "hyperlinks": null,
+            "showTerminalProgress": true,
+            "future": {"big": 1234567890123456789012345678901234567890,
+                       "decimal": 1.23456789012345678901234567890123456789e+400},
+            "large": 9999999999999999999999999999999999999999
+        },
+        "images": ["future", null],
+        "terminal.imageWidthCells": "literal top-level key",
+        "unrelated": {"extensions": [1,2]}
+    }"#;
+    write(&path, original);
+    let mut unchanged_roots = raw_members(original);
+    let unchanged_terminal = raw_members(&unchanged_roots.remove("terminal").unwrap());
+    let verify = |show_images: Option<&str>| {
+        let mut roots = raw_members(&fs::read_to_string(&path).unwrap());
+        let mut terminal = raw_members(&roots.remove("terminal").unwrap());
+        assert_eq!(terminal.remove("imageWidthCells").as_deref(), Some("81"));
+        assert_eq!(terminal.remove("showImages").as_deref(), show_images);
+        assert_eq!(terminal, unchanged_terminal);
+        assert_eq!(roots, unchanged_roots);
+    };
+
+    let tree = f.run_tall(Script::in_group("appearance"));
+    for unsupported in [
+        "images.autoResize",
+        "images.blockImages",
+        "terminal.hyperlinks",
+    ] {
+        let key = format!("{unsupported}-trigger");
+        tree.assert_value(&key, "Unsupported value");
+        assert_eq!(tree.node(&key)["focusable"], false, "{unsupported}");
+    }
+    tree.assert_save_disabled();
+
+    let mut script = Script::in_group("appearance");
+    script.select("terminal.showImages", 2);
+    script.replace_input("terminal.imageWidthCells", "81");
+    script.tap("save");
+    f.run_tall(script).assert_message("/reload");
+    verify(Some("false"));
+
+    let mut script = Script::in_group("appearance");
+    script.select("terminal.showImages", 0);
+    script.tap("save");
+    f.run_tall(script).assert_message("/reload");
+    verify(None);
 }
 
 #[test]
@@ -271,7 +792,7 @@ fn resolves_agent_directory_and_displays_the_settings_path() {
         ),
     ] {
         write(&path, json!({"theme": theme}).to_string());
-        let tree = f.run(dir, Script::default());
+        let tree = f.run(dir, Script::in_group("appearance"));
         tree.assert_path(&path);
         tree.assert_value("theme-input", theme);
     }
@@ -285,10 +806,13 @@ fn a_custom_path_read_failure_does_not_fall_back_to_the_default_file() {
     let custom = f.root.join("custom");
     write(&custom, "This is a file, not a directory");
 
-    let tree = f.run(Some(&custom), program_attempts_save());
+    let mut script = Script::in_group("appearance");
+    script.tap("save");
+    let tree = f.run(Some(&custom), script);
     tree.assert_path(&custom.join("settings.json"));
     tree.assert_message("Not a directory");
     tree.assert_save_disabled();
+    tree.node("theme-input");
     assert!(
         !tree
             .elements()
@@ -315,8 +839,9 @@ fn theme_save_and_clear_preserve_unsupported_and_unrelated_settings() {
                     "decimal": 1.23456789012345678901234567890123456789e+400}
     }"#;
     write(&path, original);
+    f.run(None, Script::in_group("appearance"))
+        .assert_value("theme-input", "local-custom");
     let initial = f.run(None, Script::default());
-    initial.assert_value("theme-input", "local-custom");
     initial.assert_value("thinking-trigger", DEFAULT);
     initial.assert_message("Unsupported value");
 
@@ -327,9 +852,9 @@ fn theme_save_and_clear_preserve_unsupported_and_unrelated_settings() {
     assert_document(&path, original, Some("another-custom"));
 
     // The next process must read its initial form value from the saved file.
-    f.run(None, Script::default())
+    f.run(None, Script::in_group("appearance"))
         .assert_value("theme-input", "another-custom");
-    let mut script = Script::default();
+    let mut script = Script::in_group("appearance");
     script.tap("theme-clear");
     script.tap("save");
     f.run(None, script);
@@ -457,12 +982,13 @@ fn can_save_twice_without_reloading_after_reading_a_utf8_bom() {
     let f = Fixture::new();
     let path = f.settings();
     write(&path, b"\xef\xbb\xbf{\"theme\":\"original\"}");
-    f.run(None, Script::default())
+    f.run(None, Script::in_group("appearance"))
         .assert_value("theme-input", "original");
 
     let mut script = Script::default();
     script.replace_theme("first-save");
     script.tap("save");
+    script.group("models");
     script.select("hide", 2);
     script.tap("save");
     f.run(None, script).assert_message("/reload");
@@ -541,6 +1067,7 @@ fn reload_reads_a_file_repaired_after_launch() {
     let mut script = Script::default();
     script.external_mark();
     script.tap("reload");
+    script.group("appearance");
     let tree = f
         .prepare(None, script)
         .on_external_mark(|| write(&path, r#"{"theme":"repaired"}"#));
@@ -562,6 +1089,7 @@ fn reload_requires_confirmation_and_cancel_keeps_unsaved_edits() {
         script.replace_theme("unsaved");
         script.tap("reload");
         script.tap(action);
+        script.group("appearance");
         let tree = f.run(None, script);
         tree.assert_value("theme-input", expected);
         assert_eq!(tree.node("save")["focusable"], action == "cancel-reload");
