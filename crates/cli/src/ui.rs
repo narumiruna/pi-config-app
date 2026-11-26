@@ -10,7 +10,7 @@ use rune_kit::{
 };
 use serde_json::Value;
 
-use crate::fields::{Atom, DEFAULT, FIELDS, GROUPS, Group, Input, Kind, Spec};
+use crate::fields::{Atom, FIELDS, GROUPS, Group, Input, Kind, Spec};
 use crate::settings::{Changes, SaveError, Settings, settings_path};
 
 const UNSUPPORTED: &str = "Unsupported value";
@@ -247,13 +247,14 @@ fn field_row(editor: &Editor, kit: &Kit, layer: &mut Vec<El>, index: usize, spec
     let non_default =
         matches!(&value, Ok(Some(value)) if spec.default.map(Atom::value).as_ref() != Some(value));
     let id = spec.control_id();
+    let default = format!("Default: {}", spec.default_value_label());
     let control = match spec.kind {
         Kind::Choice(options) => {
-            let labels: Vec<_> = std::iter::once(DEFAULT)
-                .chain(options.iter().map(|&(label, _)| label))
+            let labels: Vec<_> = std::iter::once(default)
+                .chain(options.iter().map(|&(label, _)| label.to_owned()))
                 .collect();
             let current = match field.draft {
-                Draft::Choice(n) => labels[n],
+                Draft::Choice(n) => &labels[n],
                 _ => UNSUPPORTED,
             };
             focus_row(
@@ -269,7 +270,7 @@ fn field_row(editor: &Editor, kit: &Kit, layer: &mut Vec<El>, index: usize, spec
                     })
                     .on_close(|s: &mut Editor| s.menu = None)
                     .on_choose(move |s: &mut Editor, value, _| {
-                        if let Some(n) = labels.iter().position(|&label| label == value) {
+                        if let Some(n) = labels.iter().position(|label| label == value) {
                             s.fields[index].draft = Draft::Choice(n);
                             s.edit();
                         }
@@ -290,7 +291,7 @@ fn field_row(editor: &Editor, kit: &Kit, layer: &mut Vec<El>, index: usize, spec
             } else if present && matches!(input, Input::Text { allow_empty: true }) {
                 "Empty string"
             } else {
-                DEFAULT
+                &default
             };
             let input_control = TextInput::new(edit)
                 .label(spec.label)
