@@ -8,7 +8,8 @@ use std::time::{Duration, UNIX_EPOCH};
 use serde_json::{Value, json, value::RawValue};
 use tempfile::{TempDir, tempdir, tempdir_in};
 
-const DEFAULT: &str = "Use Pi default";
+const THINKING_DEFAULT: &str = "Default: medium";
+const HIDE_DEFAULT: &str = "Default: Show";
 const EXE: &str = env!("CARGO_BIN_EXE_pi-config-app");
 
 struct Fixture {
@@ -220,17 +221,25 @@ impl Tree {
         })
     }
 
-    fn accessible_node(&self, key: &str) -> &Value {
-        fn find<'a>(node: &'a Value, key: &str) -> Option<&'a Value> {
-            if node["key"] == key {
-                return Some(node);
-            }
-            node["children"]
-                .as_array()?
-                .iter()
-                .find_map(|child| find(child, key))
+    fn find_accessible<'a>(node: &'a Value, key: &str) -> Option<&'a Value> {
+        if node["key"] == key {
+            return Some(node);
         }
-        find(&self.0["accessibility"], key).unwrap_or_else(|| panic!("no accessible {key:?} in UI"))
+        node["children"]
+            .as_array()?
+            .iter()
+            .find_map(|child| Self::find_accessible(child, key))
+    }
+
+    fn accessible_node(&self, key: &str) -> &Value {
+        Self::find_accessible(&self.0["accessibility"], key)
+            .unwrap_or_else(|| panic!("no accessible {key:?} in UI"))
+    }
+
+    fn assert_placeholder(&self, key: &str, expected: &str) {
+        let input = Self::find_accessible(self.accessible_node(key), "input")
+            .unwrap_or_else(|| panic!("no accessible input inside {key:?}"));
+        assert_eq!(input["placeholder"], expected, "{key}");
     }
 
     fn rect(&self, key: &str) -> [f64; 4] {
@@ -466,7 +475,12 @@ impl Override {
         match self {
             Choice(..) => {
                 assert_eq!(tree.node(&selector)["focusable"], true, "{selector}");
-                tree.assert_value(&selector, DEFAULT);
+                assert!(
+                    tree.subtree(&selector).any(|node| node["text"]
+                        .as_str()
+                        .is_some_and(|text| text.starts_with("Default: "))),
+                    "{selector} should show its default value"
+                );
             }
             Text(_) | Number(_) => {
                 assert!(
@@ -580,6 +594,27 @@ fn sets_reopens_and_resets_every_setting_across_all_groups() {
 }
 
 #[test]
+fn shows_defaults_in_unset_fields_without_saving_them() {
+    let f = Fixture::new();
+    let path = f.settings();
+    write(&path, "{}");
+    let models = f.run(None, Script::default());
+    models.assert_placeholder("defaultProvider-input", "Default: auto-select");
+    models.assert_placeholder("defaultModel-input", "Default: auto-select");
+    models.assert_value("thinking-trigger", THINKING_DEFAULT);
+    models.assert_value("hide-trigger", HIDE_DEFAULT);
+    models.assert_save_disabled();
+
+    let appearance = f.run_tall(Script::in_group("appearance"));
+    appearance.assert_placeholder("theme-input", "Default: system");
+    appearance.assert_placeholder("fullscreenWheelScrollLines-input", "Default: auto");
+    appearance.assert_placeholder("terminal.imageWidthCells-input", "Default: 60");
+    appearance.assert_placeholder("markdown.codeBlockIndent-input", "Default: 2 spaces");
+    appearance.assert_save_disabled();
+    assert_eq!(fs::read_to_string(path).unwrap(), "{}");
+}
+
+#[test]
 fn marks_loaded_values_that_differ_from_pi_defaults() {
     let f = Fixture::new();
     write(
@@ -652,7 +687,7 @@ fn updates_non_default_markers_before_saving_edits_and_resets() {
     script.select("thinking", 5);
     script.select("thinking", 0);
     let reset = f.run(None, script.clone());
-    reset.assert_value("thinking-trigger", DEFAULT);
+    reset.assert_value("thinking-trigger", THINKING_DEFAULT);
     reset.assert_non_default("defaultThinkingLevel", false);
     assert_eq!(fs::read_to_string(&path).unwrap(), original);
 
@@ -1256,7 +1291,7 @@ fn theme_save_and_clear_preserve_unsupported_and_unrelated_settings() {
     f.run(None, Script::in_group("appearance"))
         .assert_value("theme-input", "local-custom");
     let initial = f.run(None, Script::default());
-    initial.assert_value("thinking-trigger", DEFAULT);
+    initial.assert_value("thinking-trigger", THINKING_DEFAULT);
     initial.assert_message("Unsupported value");
 
     let mut script = Script::default();
@@ -1311,13 +1346,20 @@ fn select_menus_show_pi_choices_and_save_or_clear_the_corresponding_keys() {
     f.run(None, script).assert_options(
         "thinking-content",
         &[
-            DEFAULT, "off", "minimal", "low", "medium", "high", "xhigh", "max",
+            THINKING_DEFAULT,
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
         ],
     );
     let mut script = Script::default();
     script.tap("hide-trigger");
     f.run(None, script)
-        .assert_options("hide-content", &[DEFAULT, "Show", "Hide"]);
+        .assert_options("hide-content", &[HIDE_DEFAULT, "Show", "Hide"]);
 
     let mut script = Script::default();
     script.select("thinking", 5);
@@ -1342,8 +1384,8 @@ fn select_menus_show_pi_choices_and_save_or_clear_the_corresponding_keys() {
     script.select("hide", 0);
     script.tap("save");
     let tree = f.run(None, script);
-    tree.assert_value("thinking-trigger", DEFAULT);
-    tree.assert_value("hide-trigger", DEFAULT);
+    tree.assert_value("thinking-trigger", THINKING_DEFAULT);
+    tree.assert_value("hide-trigger", HIDE_DEFAULT);
     assert_eq!(read_json(&path), json!({}));
 }
 

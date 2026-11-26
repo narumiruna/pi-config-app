@@ -1,7 +1,5 @@
 use serde_json::{Value, json};
 
-pub const DEFAULT: &str = "Use Pi default";
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Group {
     Models,
@@ -17,7 +15,7 @@ pub const GROUPS: &[(Group, &str, &str)] = &[
     (Group::Updates, "Updates", "group-updates"),
 ];
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Atom {
     Text(&'static str),
     Bool(bool),
@@ -97,6 +95,27 @@ impl Spec {
             "defaultThinkingLevel" => "thinking",
             "hideThinkingBlock" => "hide",
             path => path,
+        }
+    }
+
+    pub fn default_value_label(&self) -> String {
+        let Some(default) = self.default else {
+            return "auto-select".into();
+        };
+        if let Kind::Choice(options) = self.kind {
+            return options
+                .iter()
+                .find_map(|&(label, value)| (value == default).then_some(label))
+                .expect("the built-in default is a choice")
+                .into();
+        }
+        match default {
+            Atom::Text(text) if !text.is_empty() && text.bytes().all(|b| b == b' ') => {
+                format!("{} spaces", text.len())
+            }
+            Atom::Text(text) => text.into(),
+            Atom::Number(number) => number.to_string(),
+            Atom::Bool(value) => value.to_string(),
         }
     }
 }
