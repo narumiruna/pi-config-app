@@ -1171,6 +1171,48 @@ fn long_path_is_clickable_in_the_titlebar_without_hiding_fields_or_save() {
 }
 
 #[test]
+fn footer_keeps_status_and_actions_on_one_row_at_minimum_width() {
+    let f = Fixture::new();
+    write(&f.settings(), "{}");
+    let mut invalid = Script::in_group("appearance");
+    invalid.scroll_form(-500);
+    invalid.replace_input("terminal.imageWidthCells", "0");
+    for (script, message, buttons) in [
+        (
+            Script::default(),
+            "No unsaved changes",
+            &["reload", "save"][..],
+        ),
+        (
+            invalid,
+            "Fix Image width (cells) in Appearance before saving.",
+            &["jump-to-invalid", "reload", "save"][..],
+        ),
+    ] {
+        let mut run = f.prepare(None, script);
+        run.command.args(["--size", "500x430"]);
+        let tree = run.finish();
+        let footer = tree.rect("settings-footer");
+        tree.assert_in_bounds("settings-footer", [0.0, 0.0, 500.0, 430.0]);
+        tree.assert_in_bounds("status", footer);
+        assert_eq!(tree.node("status")["text"], message);
+        let [x, y, w, h] = tree.rect("status");
+        let mut right = x + w;
+        let center_y = y + h / 2.0;
+        for &button in buttons {
+            tree.assert_in_bounds(button, footer);
+            let [x, y, w, h] = tree.rect(button);
+            assert!(x >= right, "{button} overlaps the preceding element");
+            assert!(
+                (y + h / 2.0 - center_y).abs() <= 0.02,
+                "{button} is not centered on the status row"
+            );
+            right = x + w;
+        }
+    }
+}
+
+#[test]
 fn a_custom_path_read_failure_does_not_fall_back_to_the_default_file() {
     let f = Fixture::new();
     let good = r#"{"theme":"default-must-not-load"}"#;

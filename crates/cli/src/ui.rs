@@ -565,18 +565,21 @@ pub fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
                 ),
         )
         .child(
-            col()
+            row()
+                .key("settings-footer")
                 .w_full()
                 .px(20.0)
                 .py(12.0)
-                .gap(8.0)
+                .gap(12.0)
+                .center_y()
                 .fill(kit.c.layer_01)
                 .child(
                     text(status)
                         .key("status")
                         .font(kit.ty.ui)
                         .wrap()
-                        .w_full()
+                        .grow(1.0)
+                        .min_w(0.0)
                         .color(if error {
                             kit.c.danger.fg
                         } else {
@@ -591,7 +594,6 @@ pub fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
                 .child(
                     row()
                         .gap(8.0)
-                        .justify_end()
                         .children(invalid.map(|spec| {
                             Button::new("Go to field")
                                 .control_size(ControlSize::Large)
