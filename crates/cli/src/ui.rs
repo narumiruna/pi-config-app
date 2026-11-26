@@ -27,7 +27,7 @@ fn group_index(group: Group) -> usize {
 
 enum Draft {
     Unsupported,
-    Choice(usize),
+    Choice(Option<Atom>),
     Input { edit: Box<TextEdit>, present: bool },
 }
 
@@ -52,11 +52,11 @@ impl Field {
         };
         let draft = match spec.kind {
             Kind::Choice(options) => match initial.as_ref() {
-                None => Draft::Choice(0),
+                None => Draft::Choice(None),
                 Some(value) => options
                     .iter()
-                    .position(|(_, atom)| &atom.value() == value)
-                    .map_or(Draft::Unsupported, |index| Draft::Choice(index + 1)),
+                    .find(|(_, atom)| &atom.value() == value)
+                    .map_or(Draft::Unsupported, |&(_, atom)| Draft::Choice(Some(atom))),
             },
             Kind::Input(input) => match initial.as_ref() {
                 None => Draft::Input {
@@ -84,9 +84,7 @@ impl Field {
     fn value(&self, spec: &Spec) -> Result<Option<Value>, String> {
         match (&self.draft, spec.kind) {
             (Draft::Unsupported, _) => Ok(None),
-            (Draft::Choice(index), Kind::Choice(options)) => {
-                Ok(index.checked_sub(1).map(|i| options[i].1.value()))
-            }
+            (Draft::Choice(value), Kind::Choice(_)) => Ok(value.map(Atom::value)),
             (
                 Draft::Input {
                     edit,
@@ -247,16 +245,35 @@ fn field_row(editor: &Editor, kit: &Kit, layer: &mut Vec<El>, index: usize, spec
     let non_default =
         matches!(&value, Ok(Some(value)) if spec.default.map(Atom::value).as_ref() != Some(value));
     let id = spec.control_id();
-    let default = format!("Default: {}", spec.default_value_label());
     let control = match spec.kind {
         Kind::Choice(options) => {
-            let labels: Vec<_> = std::iter::once(default)
-                .chain(options.iter().map(|&(label, _)| label.to_owned()))
+            let mut choices: Vec<_> = options
+                .iter()
+                .map(|&(label, value)| {
+                    if Some(value) == spec.default {
+                        (format!("{label} (default)"), None)
+                    } else {
+                        (label.to_owned(), Some(value))
+                    }
+                })
                 .collect();
+            if !choices.iter().any(|(_, value)| value.is_none()) {
+                choices.insert(
+                    0,
+                    (format!("Default: {}", spec.default_value_label()), None),
+                );
+            }
             let current = match field.draft {
-                Draft::Choice(n) => &labels[n],
+                Draft::Choice(value) => {
+                    let shown = value.filter(|&value| Some(value) != spec.default);
+                    choices
+                        .iter()
+                        .find_map(|(label, value)| (*value == shown).then_some(label.as_str()))
+                        .expect("the current value has a choice")
+                }
                 _ => UNSUPPORTED,
             };
+            let labels: Vec<_> = choices.iter().map(|(label, _)| label.as_str()).collect();
             focus_row(
                 Select::new(id, &labels)
                     .label(spec.label)
@@ -270,8 +287,9 @@ fn field_row(editor: &Editor, kit: &Kit, layer: &mut Vec<El>, index: usize, spec
                     })
                     .on_close(|s: &mut Editor| s.menu = None)
                     .on_choose(move |s: &mut Editor, value, _| {
-                        if let Some(n) = labels.iter().position(|label| label == value) {
-                            s.fields[index].draft = Draft::Choice(n);
+                        if let Some((_, choice)) = choices.iter().find(|(label, _)| label == value)
+                        {
+                            s.fields[index].draft = Draft::Choice(*choice);
                             s.edit();
                         }
                         s.menu = None;
@@ -287,11 +305,11 @@ fn field_row(editor: &Editor, kit: &Kit, layer: &mut Vec<El>, index: usize, spec
                 _ => (&blank, false),
             };
             let placeholder = if unsupported {
-                UNSUPPORTED
+                UNSUPPORTED.to_owned()
             } else if present && matches!(input, Input::Text { allow_empty: true }) {
-                "Empty string"
+                "Empty string".to_owned()
             } else {
-                &default
+                format!("Default: {}", spec.default_value_label())
             };
             let input_control = TextInput::new(edit)
                 .label(spec.label)

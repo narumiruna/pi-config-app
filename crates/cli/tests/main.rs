@@ -8,8 +8,8 @@ use std::time::{Duration, UNIX_EPOCH};
 use serde_json::{Value, json, value::RawValue};
 use tempfile::{TempDir, tempdir, tempdir_in};
 
-const THINKING_DEFAULT: &str = "Default: medium";
-const HIDE_DEFAULT: &str = "Default: Show";
+const THINKING_DEFAULT: &str = "medium (default)";
+const HIDE_DEFAULT: &str = "Show (default)";
 const EXE: &str = env!("CARGO_BIN_EXE_pi-config-app");
 
 struct Fixture {
@@ -363,54 +363,51 @@ const COVERAGE: &[(&str, &[Case])] = &[
         &[
             ("defaultProvider", Text("local-provider")),
             ("defaultModel", Text("local/model-v2")),
-            ("defaultThinkingLevel", Choice(5, "high", r#""high""#)),
-            ("hideThinkingBlock", Choice(2, "Hide", "true")),
-            ("showCacheMissNotices", Choice(1, "On", "true")),
+            ("defaultThinkingLevel", Choice(4, "high", r#""high""#)),
+            ("hideThinkingBlock", Choice(1, "Hide", "true")),
+            ("showCacheMissNotices", Choice(0, "On", "true")),
         ],
     ),
     (
         "interaction",
         &[
-            ("steeringMode", Choice(1, "all", r#""all""#)),
-            (
-                "followUpMode",
-                Choice(2, "one-at-a-time", r#""one-at-a-time""#),
-            ),
-            ("doubleEscapeAction", Choice(2, "fork", r#""fork""#)),
-            ("treeFilterMode", Choice(3, "user-only", r#""user-only""#)),
+            ("steeringMode", Choice(0, "all", r#""all""#)),
+            ("followUpMode", Choice(0, "all", r#""all""#)),
+            ("doubleEscapeAction", Choice(1, "fork", r#""fork""#)),
+            ("treeFilterMode", Choice(2, "user-only", r#""user-only""#)),
         ],
     ),
     (
         "appearance",
         &[
             ("theme", Text("light/custom-dark")),
-            ("quietStartup", Choice(3, "Header only", r#""header""#)),
-            ("tuiMode", Choice(1, "regular", r#""regular""#)),
+            ("quietStartup", Choice(2, "Header only", r#""header""#)),
+            ("tuiMode", Choice(0, "regular", r#""regular""#)),
             (
                 "fullscreenExitOutput",
-                Choice(2, "resume-hint", r#""resume-hint""#),
+                Choice(1, "resume-hint", r#""resume-hint""#),
             ),
-            ("fullscreenScrollbar", Choice(2, "always", r#""always""#)),
-            ("fullscreenCopyOnSelect", Choice(2, "Off", "false")),
+            ("fullscreenScrollbar", Choice(1, "always", r#""always""#)),
+            ("fullscreenCopyOnSelect", Choice(1, "Off", "false")),
             ("fullscreenWheelScrollLines", Text("auto")),
             ("editorPaddingX", Number(0)),
-            ("outputPad", Choice(1, "0", "0")),
+            ("outputPad", Choice(0, "0", "0")),
             ("autocompleteMaxVisible", Number(20)),
-            ("showHardwareCursor", Choice(1, "On", "true")),
-            ("terminal.showImages", Choice(2, "Off", "false")),
+            ("showHardwareCursor", Choice(0, "On", "true")),
+            ("terminal.showImages", Choice(1, "Off", "false")),
             ("terminal.imageWidthCells", Number(72)),
-            ("terminal.clearOnShrink", Choice(1, "On", "true")),
-            ("terminal.showTerminalProgress", Choice(1, "On", "true")),
-            ("terminal.hyperlinks", Choice(3, "auto", r#""auto""#)),
-            ("terminal.images", Choice(4, "Off", "false")),
-            ("terminal.trueColor", Choice(3, "auto", r#""auto""#)),
-            ("images.autoResize", Choice(2, "Off", "false")),
-            ("images.blockImages", Choice(1, "On", "true")),
+            ("terminal.clearOnShrink", Choice(0, "On", "true")),
+            ("terminal.showTerminalProgress", Choice(0, "On", "true")),
+            ("terminal.hyperlinks", Choice(0, "On", "true")),
+            ("terminal.images", Choice(3, "Off", "false")),
+            ("terminal.trueColor", Choice(1, "Off", "false")),
+            ("images.autoResize", Choice(1, "Off", "false")),
+            ("images.blockImages", Choice(0, "On", "true")),
             ("markdown.codeBlockIndent", Text("")),
-            ("markdown.mermaid", Choice(2, "final", r#""final""#)),
+            ("markdown.mermaid", Choice(1, "final", r#""final""#)),
         ],
     ),
-    ("updates", &[("collapseChangelog", Choice(1, "On", "true"))]),
+    ("updates", &[("collapseChangelog", Choice(0, "On", "true"))]),
 ];
 
 fn control_key(path: &str) -> &str {
@@ -418,6 +415,33 @@ fn control_key(path: &str) -> &str {
         "defaultThinkingLevel" => "thinking",
         "hideThinkingBlock" => "hide",
         _ => path,
+    }
+}
+
+fn default_option(path: &str) -> usize {
+    match path {
+        "hideThinkingBlock"
+        | "doubleEscapeAction"
+        | "treeFilterMode"
+        | "fullscreenExitOutput"
+        | "fullscreenScrollbar"
+        | "fullscreenCopyOnSelect"
+        | "terminal.showImages"
+        | "images.autoResize" => 0,
+        "showCacheMissNotices"
+        | "steeringMode"
+        | "followUpMode"
+        | "quietStartup"
+        | "tuiMode"
+        | "outputPad"
+        | "showHardwareCursor"
+        | "terminal.clearOnShrink"
+        | "terminal.showTerminalProgress"
+        | "images.blockImages"
+        | "collapseChangelog" => 1,
+        "terminal.hyperlinks" | "terminal.images" | "terminal.trueColor" | "markdown.mermaid" => 2,
+        "defaultThinkingLevel" => 3,
+        _ => panic!("missing default option for {path}"),
     }
 }
 
@@ -435,7 +459,7 @@ impl Override {
     fn reset(self, script: &mut Script, path: &str) {
         let key = control_key(path);
         match self {
-            Choice(..) => script.select(key, 0),
+            Choice(..) => script.select(key, default_option(path)),
             Text(_) | Number(_) => script.tap(&format!("{key}-clear")),
         }
     }
@@ -478,7 +502,7 @@ impl Override {
                 assert!(
                     tree.subtree(&selector).any(|node| node["text"]
                         .as_str()
-                        .is_some_and(|text| text.starts_with("Default: "))),
+                        .is_some_and(|text| text.ends_with(" (default)"))),
                     "{selector} should show its default value"
                 );
             }
@@ -671,24 +695,18 @@ fn updates_non_default_markers_before_saving_edits_and_resets() {
 
     let mut script = Script::default();
     script.replace_input("defaultModel", "custom-model");
-    script.select("thinking", 5);
+    script.select("thinking", 4);
     let edited = f.run(None, script.clone());
     edited.assert_non_default("defaultModel", true);
     edited.assert_non_default("defaultThinkingLevel", true);
     edited.assert_message("Unsaved changes");
 
     script.tap("defaultProvider-clear");
-    script.select("thinking", 4);
-    let explicit_default = f.run(None, script.clone());
-    explicit_default.assert_value("thinking-trigger", "medium");
-    explicit_default.assert_non_default("defaultThinkingLevel", false);
-    explicit_default.assert_non_default("defaultProvider", false);
-
-    script.select("thinking", 5);
-    script.select("thinking", 0);
+    script.select("thinking", 3);
     let reset = f.run(None, script.clone());
     reset.assert_value("thinking-trigger", THINKING_DEFAULT);
     reset.assert_non_default("defaultThinkingLevel", false);
+    reset.assert_non_default("defaultProvider", false);
     assert_eq!(fs::read_to_string(&path).unwrap(), original);
 
     script.tap("save");
@@ -768,9 +786,9 @@ fn fullscreen_preferences_have_a_persistent_hint_and_can_be_changed_in_regular_m
     let mut script = Script::in_group("appearance");
     assert_regular_with_hint(&f.run_tall(script.clone()));
 
-    script.select("fullscreenExitOutput", 2);
-    script.select("fullscreenScrollbar", 2);
-    script.select("fullscreenCopyOnSelect", 2);
+    script.select("fullscreenExitOutput", 1);
+    script.select("fullscreenScrollbar", 1);
+    script.select("fullscreenCopyOnSelect", 1);
     script.replace_input("fullscreenWheelScrollLines", "7");
     script.tap("save");
     let saved = f.run_tall(script);
@@ -796,9 +814,9 @@ fn switching_groups_keeps_pending_edits_without_writing_or_creating_a_parent() {
     write(&path, original);
 
     let mut script = Script::in_group("appearance");
-    script.select("terminal.showImages", 2);
+    script.select("terminal.showImages", 1);
     script.group("updates");
-    script.select("collapseChangelog", 1);
+    script.select("collapseChangelog", 0);
     script.group("appearance");
     let tree = f.run_tall(script);
     tree.assert_value("terminal.showImages-trigger", "Off");
@@ -813,19 +831,18 @@ fn mixed_choices_store_the_correct_json_types() {
     let mut expected = json!({});
     for choices in [
         &[
-            ("quietStartup", Choice(1, "Hide startup", "true")),
-            ("terminal.hyperlinks", Choice(1, "On", "true")),
-            ("terminal.images", Choice(1, "kitty", r#""kitty""#)),
-            ("terminal.trueColor", Choice(1, "On", "true")),
-            ("outputPad", Choice(2, "1", "1")),
+            ("quietStartup", Choice(0, "Hide startup", "true")),
+            ("terminal.hyperlinks", Choice(0, "On", "true")),
+            ("terminal.images", Choice(0, "kitty", r#""kitty""#)),
+            ("terminal.trueColor", Choice(0, "On", "true")),
+            ("outputPad", Choice(0, "0", "0")),
         ][..],
         &[
-            ("quietStartup", Choice(2, "Show startup", "false")),
-            ("terminal.hyperlinks", Choice(2, "Off", "false")),
-            ("terminal.images", Choice(2, "iterm2", r#""iterm2""#)),
-            ("terminal.trueColor", Choice(2, "Off", "false")),
+            ("quietStartup", Choice(2, "Header only", r#""header""#)),
+            ("terminal.hyperlinks", Choice(1, "Off", "false")),
+            ("terminal.images", Choice(1, "iterm2", r#""iterm2""#)),
+            ("terminal.trueColor", Choice(1, "Off", "false")),
         ][..],
-        &[("terminal.images", Choice(3, "auto", r#""auto""#))][..],
     ] {
         let mut script = Script::in_group("appearance");
         for &(path, value) in choices {
@@ -840,6 +857,17 @@ fn mixed_choices_store_the_correct_json_types() {
             value.assert_loaded(&reopened, path);
         }
     }
+
+    let mut script = Script::in_group("appearance");
+    script.select("quietStartup", 1);
+    script.select("outputPad", 1);
+    script.select("terminal.images", 2);
+    script.tap("save");
+    f.run_tall(script).assert_message("/reload");
+    assert_eq!(
+        read_json(&path),
+        json!({"terminal": {"hyperlinks": false, "trueColor": false}})
+    );
 }
 
 #[test]
@@ -1078,7 +1106,7 @@ fn nested_edits_preserve_raw_siblings_unsupported_values_and_unsupported_parents
     tree.assert_save_disabled();
 
     let mut script = Script::in_group("appearance");
-    script.select("terminal.showImages", 2);
+    script.select("terminal.showImages", 1);
     script.replace_input("terminal.imageWidthCells", "81");
     script.tap("save");
     f.run_tall(script).assert_message("/reload");
@@ -1346,11 +1374,10 @@ fn select_menus_show_pi_choices_and_save_or_clear_the_corresponding_keys() {
     f.run(None, script).assert_options(
         "thinking-content",
         &[
-            THINKING_DEFAULT,
             "off",
             "minimal",
             "low",
-            "medium",
+            THINKING_DEFAULT,
             "high",
             "xhigh",
             "max",
@@ -1359,11 +1386,11 @@ fn select_menus_show_pi_choices_and_save_or_clear_the_corresponding_keys() {
     let mut script = Script::default();
     script.tap("hide-trigger");
     f.run(None, script)
-        .assert_options("hide-content", &[HIDE_DEFAULT, "Show", "Hide"]);
+        .assert_options("hide-content", &[HIDE_DEFAULT, "Hide"]);
 
     let mut script = Script::default();
-    script.select("thinking", 5);
-    script.select("hide", 2);
+    script.select("thinking", 4);
+    script.select("hide", 1);
     script.tap("save");
     let tree = f.run(None, script);
     tree.assert_value("thinking-trigger", "high");
@@ -1374,19 +1401,36 @@ fn select_menus_show_pi_choices_and_save_or_clear_the_corresponding_keys() {
     );
 
     let mut script = Script::default();
-    script.select("thinking", 0);
-    script.select("hide", 1);
-    script.tap("save");
-    assert_eq!(f.run(None, script).node("save")["focusable"], false);
-    assert_eq!(read_json(&path), json!({"hideThinkingBlock":false}));
-
-    let mut script = Script::default();
+    script.select("thinking", 3);
     script.select("hide", 0);
     script.tap("save");
     let tree = f.run(None, script);
     tree.assert_value("thinking-trigger", THINKING_DEFAULT);
     tree.assert_value("hide-trigger", HIDE_DEFAULT);
     assert_eq!(read_json(&path), json!({}));
+}
+
+#[test]
+fn preserves_an_explicit_default_until_the_default_option_is_chosen() {
+    let f = Fixture::new();
+    let path = f.settings();
+    write(&path, r#"{"defaultThinkingLevel":"medium"}"#);
+
+    let mut script = Script::default();
+    script.replace_input("defaultModel", "local/model");
+    script.tap("save");
+    f.run(None, script)
+        .assert_value("thinking-trigger", THINKING_DEFAULT);
+    assert_eq!(
+        read_json(&path),
+        json!({"defaultThinkingLevel": "medium", "defaultModel": "local/model"})
+    );
+
+    let mut script = Script::default();
+    script.select("thinking", 3);
+    script.tap("save");
+    f.run(None, script).assert_message("/reload");
+    assert_eq!(read_json(&path), json!({"defaultModel": "local/model"}));
 }
 
 #[test]
@@ -1445,7 +1489,7 @@ fn can_save_twice_without_reloading_after_reading_a_utf8_bom() {
     script.replace_theme("first-save");
     script.tap("save");
     script.group("models");
-    script.select("hide", 2);
+    script.select("hide", 1);
     script.tap("save");
     f.run(None, script).assert_message("/reload");
     assert_eq!(

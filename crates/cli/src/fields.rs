@@ -102,13 +102,6 @@ impl Spec {
         let Some(default) = self.default else {
             return "auto-select".into();
         };
-        if let Kind::Choice(options) = self.kind {
-            return options
-                .iter()
-                .find_map(|&(label, value)| (value == default).then_some(label))
-                .expect("the built-in default is a choice")
-                .into();
-        }
         match default {
             Atom::Text(text) if !text.is_empty() && text.bytes().all(|b| b == b' ') => {
                 format!("{} spaces", text.len())
