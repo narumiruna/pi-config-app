@@ -985,7 +985,36 @@ fn resolves_agent_directory_and_displays_the_settings_path() {
 }
 
 #[test]
-fn long_path_keeps_the_copy_button_model_fields_and_save_in_the_smallest_window() {
+fn titlebar_path_keeps_clear_of_the_macos_window_buttons() {
+    let f = Fixture::new();
+    let mut run = f.prepare(None, Script::default());
+    run.command.args(["--chrome", "--size", "500x430"]);
+    let output = run.command.output().unwrap();
+    let tree = run.read_tree(&output);
+    let log = String::from_utf8_lossy(&output.stderr);
+    assert!(log.contains("0 overlapping elements"), "{log}");
+    assert!(
+        tree.elements()
+            .iter()
+            .all(|node| node["text"] != "Pi Config App" && node["text"] != "USER SETTINGS FILE")
+    );
+    tree.assert_in_bounds("settings-path", tree.rect("titlebar"));
+    let [_, bar_y, _, bar_h] = tree.rect("titlebar");
+    assert!(tree.rect("group-models")[1] >= bar_y + bar_h);
+}
+
+#[test]
+fn hovering_over_the_top_right_path_shows_the_copy_hint() {
+    let f = Fixture::new();
+    let mut script = Script::default();
+    script.event(json!({"type": "move", "key": "settings-path"}));
+    script.ticks += 15;
+    let tree = f.run(None, script);
+    assert_eq!(tree.0["tooltip"]["text"], "Click to copy the full path");
+}
+
+#[test]
+fn long_path_is_clickable_in_the_titlebar_without_hiding_fields_or_save() {
     let f = Fixture::new();
     let dir = (0..7).fold(f.root.clone(), |dir, _| {
         dir.join("portable-settings-".repeat(6))
@@ -1003,7 +1032,7 @@ fn long_path_keeps_the_copy_button_model_fields_and_save_in_the_smallest_window(
 
     let mut script = Script::default();
     script.replace_input("defaultProvider", "unsaved-provider");
-    script.tap("copy-settings-path");
+    script.tap("settings-path");
     let mut run = f.prepare(Some(&dir), script);
     run.command.args(["--size", "500x430"]);
     let tree = run.finish();
@@ -1017,20 +1046,17 @@ fn long_path_keeps_the_copy_button_model_fields_and_save_in_the_smallest_window(
         path.to_str().unwrap()
     );
     assert_eq!(path_node["rect"][3], path_node["textStyle"]["lineHeight"]);
-    let copy = tree.node("copy-settings-path");
-    assert_eq!(copy["role"], "button");
-    assert_eq!(
-        copy["focused"], true,
-        "the Copy path button was not reached"
+    assert_eq!(path_node["role"], "button");
+    assert_eq!(path_node["focused"], true);
+    assert!(
+        tree.elements()
+            .iter()
+            .all(|node| node["text"] != "Copy path")
     );
+    tree.assert_in_bounds("settings-path", tree.rect("titlebar"));
     let [path_x, _, path_w, _] = tree.rect("settings-path");
-    assert!(path_x + path_w <= tree.rect("copy-settings-path")[0]);
-    for key in [
-        "settings-path",
-        "copy-settings-path",
-        "settings-form",
-        "save",
-    ] {
+    assert!((path_x + path_w - 480.0).abs() < 0.02);
+    for key in ["settings-path", "settings-form", "save"] {
         tree.assert_in_bounds(key, window);
     }
     let form = tree.rect("settings-form");
