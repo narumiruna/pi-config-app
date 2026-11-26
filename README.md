@@ -11,7 +11,7 @@ sudo apt-get install libxkbcommon-dev libvulkan1 mesa-vulkan-drivers
 cargo run --locked
 ```
 
-The window shows the settings path on one line. Click **Copy path** to get the full path. If `PI_CODING_AGENT_DIR` is unset or empty, the app opens `~/.pi/agent/settings.json`. To use another directory:
+Hover over the settings path on the right side of the title bar to see **Click to copy the full path**. Click the path to copy it in full, even when the displayed text is shortened. If `PI_CODING_AGENT_DIR` is unset or empty, the app opens `~/.pi/agent/settings.json`. To use another directory:
 
 ```sh
 PI_CODING_AGENT_DIR="$HOME/my-pi-agent" cargo run --locked
@@ -40,5 +40,7 @@ Integration tests run the built app in Rune's headless mode with temporary setti
 scratch="$(mktemp -d)"
 PI_CODING_AGENT_DIR="$scratch" cargo run --locked -- --snap "$scratch/settings.png" --tree "$scratch/tree.json"
 ```
+
+Add `--chrome` to the preview command to show the macOS window buttons and check that they do not overlap the path in the title bar.
 
 See the [product requirements](docs/prd/pi-config-app.md) for scope and acceptance checks. Linux is the first target; macOS and Windows are not verified.

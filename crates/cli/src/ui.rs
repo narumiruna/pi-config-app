@@ -3,7 +3,7 @@ use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use rune::{Cx, El, LiveRegion, ScrollSpec, TextEdit, TextStyle, Tx, col, row, text};
+use rune::{Align, Cursor, Cx, El, LiveRegion, ScrollSpec, TextEdit, Tx, col, el, row, text};
 use rune_kit::{
     Button, ButtonVariant, ControlSize, Dialog, Kit, ScrollBar, ScrollBarStyle, Select,
     SelectAppearance, TextInput,
@@ -15,6 +15,7 @@ use crate::settings::{Changes, SaveError, Settings, settings_path};
 
 const UNSUPPORTED: &str = "Unsupported value";
 const FORM_SCROLL: &str = "settings-form";
+pub const TITLEBAR_HEIGHT: f32 = 32.0;
 
 fn group_index(group: Group) -> usize {
     GROUPS
@@ -408,10 +409,26 @@ pub fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
     let invalid = changes.as_ref().err().copied();
     let dirty = !matches!(changes, Ok(changes) if changes.is_empty());
     let (error, status) = editor.status(dirty, invalid);
-    let path = editor.path.as_ref().map_or_else(
-        || "Path unavailable".to_owned(),
-        |path| path.display().to_string(),
-    );
+    let path = match &editor.path {
+        Some(path) => {
+            let path = path.display().to_string();
+            text(path.clone())
+                .role("button")
+                .label(path.clone())
+                .description("Copy the full settings file path")
+                .help("Click to copy the full path")
+                .cursor(Cursor::Pointer)
+                .focusable(true)
+                .on_press_tx(move |_: &mut Editor, tx| tx.copy(path.clone()))
+                .press_on_return()
+        }
+        None => text("Path unavailable"),
+    }
+    .key("settings-path")
+    .font(kit.ty.ui_compact)
+    .color(kit.c.text_muted)
+    .align(Align::End)
+    .truncate_head();
     let navigation = GROUPS
         .iter()
         .fold(row().gap(6.0), |nav, &(group, label, key)| {
@@ -434,51 +451,21 @@ pub fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
         .role("tablist")
         .label("Settings groups")
         .focus_group();
+    let insets = cx.chrome_insets();
+    let titlebar = row()
+        .key("titlebar")
+        .w_full()
+        .h(TITLEBAR_HEIGHT)
+        .pl(insets.leading + 20.0)
+        .pr(insets.trailing + 20.0)
+        .center_y()
+        .window_drag()
+        .child(el().grow(1.0).min_w(48.0))
+        .child(path);
     let header = col()
         .w_full()
-        .px(20.0)
-        .py(12.0)
-        .gap(8.0)
-        .child(
-            text("Pi Config App")
-                .role("heading")
-                .font(TextStyle::new(24.0, 650.0))
-                .color(kit.c.text_strong),
-        )
-        .child(
-            text("USER SETTINGS FILE")
-                .font(kit.ty.ui_compact)
-                .color(kit.c.text_muted),
-        )
-        .child(
-            row()
-                .w_full()
-                .gap(8.0)
-                .center_y()
-                .child(
-                    text(path)
-                        .key("settings-path")
-                        .font(kit.ty.ui)
-                        .color(kit.c.text_strong)
-                        .grow(1.0)
-                        .truncate_middle()
-                        .selectable(true),
-                )
-                .child(
-                    Button::new("Copy path")
-                        .help("Copy the full settings file path")
-                        .disabled(editor.path.is_none())
-                        .build(&kit)
-                        .key("copy-settings-path")
-                        .on_press_tx(|s: &mut Editor, tx| {
-                            if let Some(path) = &s.path {
-                                tx.copy(path.display().to_string());
-                            }
-                        })
-                        .press_on_return(),
-                ),
-        )
-        .child(navigation);
+        .child(titlebar)
+        .child(col().w_full().px(20.0).pb(12.0).child(navigation));
     let fields = FIELDS
         .iter()
         .enumerate()
