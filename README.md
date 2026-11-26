@@ -19,6 +19,8 @@ PI_CODING_AGENT_DIR="$HOME/my-pi-agent" cargo run --locked
 
 Choose a settings group, edit one or more values, then click **Save**. Each group remembers its scroll position and pending edits when you switch groups. If an invalid value blocks saving, click **Go to field** to correct it. The **Appearance** group separates fullscreen preferences from other settings; they can be edited in any mode but only apply in fullscreen. To remove an override, click **Clear** next to a text or number field or choose **Use Pi default** from a menu. For Markdown code block indent, **Set empty** saves an explicit empty string instead of using Pi's default indentation.
 
+A short gray line to the left of a setting marks a value that differs from Pi 1.6.0's built-in default, including an explicit provider or model in place of automatic selection. The line updates as you edit. The comparison does not account for environment variables or project settings.
+
 The first save creates a missing settings file. The app preserves unsupported values and unedited settings, including sibling values in nested objects. It does not open a `settings.json` symbolic link or overwrite a file it detects has changed since load. Use **Reload** to read it again.
 
 After saving, use `/reload` in an open Pi session. Startup settings may require a new session or a Pi restart. Project settings can still override user preferences. The editor does not check whether a provider or model ID is available.

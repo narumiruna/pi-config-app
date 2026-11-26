@@ -292,6 +292,21 @@ impl Tree {
         assert_eq!(self.node("save")["focusable"], false, "Save is enabled");
     }
 
+    fn assert_non_default(&self, path: &str, expected: bool) {
+        let key = format!("field-{path}");
+        let marker = self
+            .subtree(&key)
+            .find(|node| node["key"] == "non-default-marker");
+        assert_eq!(marker.is_some(), expected, "Non-default marker for {path}");
+        assert!(!self.subtree(&key).any(|node| node["text"] == "Non-default"));
+        if let Some(marker) = marker {
+            let label = self.rect(&format!("label-{path}"));
+            let [x, _, width, height] =
+                std::array::from_fn(|i| marker["rect"][i].as_f64().unwrap());
+            assert!(width > 0.0 && height > width && x + width <= label[0]);
+        }
+    }
+
     fn assert_row_message(&self, path: &str, message: &str) {
         let row = format!("field-{path}");
         let texts: Vec<_> = self
@@ -565,6 +580,91 @@ fn sets_reopens_and_resets_every_setting_across_all_groups() {
 }
 
 #[test]
+fn marks_loaded_values_that_differ_from_pi_defaults() {
+    let f = Fixture::new();
+    write(
+        &f.settings(),
+        r#"{
+            "defaultProvider": "custom-provider",
+            "defaultThinkingLevel": "medium",
+            "hideThinkingBlock": true,
+            "showCacheMissNotices": "unsupported",
+            "theme": "system",
+            "editorPaddingX": 0,
+            "terminal": {"imageWidthCells": 72, "images": "auto"},
+            "markdown": {"codeBlockIndent": ""}
+        }"#,
+    );
+    let models = f.run(None, Script::default());
+    models.assert_non_default("defaultProvider", true);
+    models.assert_non_default("defaultModel", false);
+    models.assert_non_default("defaultThinkingLevel", false);
+    models.assert_non_default("hideThinkingBlock", true);
+    models.assert_non_default("showCacheMissNotices", false);
+    models.assert_row_message("showCacheMissNotices", "Existing value is kept as-is");
+    let provider = models.rect("label-defaultProvider");
+    let model = models.rect("label-defaultModel");
+    assert_eq!(
+        [provider[0], provider[2], provider[3]],
+        [model[0], model[2], model[3]]
+    );
+    assert_eq!(
+        models.rect("field-defaultProvider")[3],
+        models.rect("field-defaultModel")[3]
+    );
+    assert_eq!(
+        models.accessible_node("label-defaultProvider")["description"],
+        "Non-default value"
+    );
+    assert!(models.accessible_node("label-defaultModel")["description"].is_null());
+    models.assert_save_disabled();
+
+    let appearance = f.run_tall(Script::in_group("appearance"));
+    appearance.assert_non_default("theme", false);
+    appearance.assert_non_default("editorPaddingX", false);
+    appearance.assert_non_default("terminal.imageWidthCells", true);
+    appearance.assert_non_default("terminal.images", false);
+    appearance.assert_non_default("markdown.codeBlockIndent", true);
+}
+
+#[test]
+fn updates_non_default_markers_before_saving_edits_and_resets() {
+    let f = Fixture::new();
+    let path = f.settings();
+    let original = r#"{"defaultProvider":"custom-provider","defaultThinkingLevel":"medium"}"#;
+    write(&path, original);
+
+    let mut script = Script::default();
+    script.replace_input("defaultModel", "custom-model");
+    script.select("thinking", 5);
+    let edited = f.run(None, script.clone());
+    edited.assert_non_default("defaultModel", true);
+    edited.assert_non_default("defaultThinkingLevel", true);
+    edited.assert_message("Unsaved changes");
+
+    script.tap("defaultProvider-clear");
+    script.select("thinking", 4);
+    let explicit_default = f.run(None, script.clone());
+    explicit_default.assert_value("thinking-trigger", "medium");
+    explicit_default.assert_non_default("defaultThinkingLevel", false);
+    explicit_default.assert_non_default("defaultProvider", false);
+
+    script.select("thinking", 5);
+    script.select("thinking", 0);
+    let reset = f.run(None, script.clone());
+    reset.assert_value("thinking-trigger", DEFAULT);
+    reset.assert_non_default("defaultThinkingLevel", false);
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    script.tap("save");
+    let saved = f.run(None, script);
+    saved.assert_message("/reload");
+    saved.assert_non_default("defaultModel", true);
+    saved.assert_non_default("defaultThinkingLevel", false);
+    assert_eq!(read_json(&path), json!({"defaultModel": "custom-model"}));
+}
+
+#[test]
 fn appearance_has_section_headings_and_preserves_its_scroll_position_across_tabs() {
     let f = Fixture::new();
     write(&f.settings(), "{}");
@@ -781,6 +881,7 @@ fn invalid_numeric_edits_explain_the_error_and_block_other_pending_edits() {
         let tree = f.run_tall(script);
         tree.assert_value(&format!("{field}-input"), invalid);
         tree.assert_row_message(field, explanation);
+        tree.assert_non_default(field, false);
         tree.assert_save_disabled();
         assert_eq!(
             fs::read_to_string(&path).unwrap(),

@@ -35,6 +35,7 @@
 | Updates | `collapseChangelog` |
 
 - 選單用 **Use Pi default** 清除明確設定。文字和數字欄位用 **Clear**；Markdown 縮排另可用 **Set empty** 設為空字串，不同於使用 Pi 預設。
+- 設定左側的短灰線會隨編輯即時更新。有效的欄位值與 Pi 1.6.0 內建預設不同時才顯示；明確指定 provider 或 model ID 也會標記，因為預設為自動選擇。比較不計入環境變數或專案設定。
 - 數字欄位接受整數：`editorPaddingX` 為 0–3，`autocompleteMaxVisible` 為 3–20，`fullscreenWheelScrollLines` 為 1–100 或 `auto`，`terminal.imageWidthCells` 為 1–9007199254740991。不合法的編輯無法儲存；狀態列指出欄位與群組，按 **Go to field** 可直接定位。不支援的既有值會保留。
 - **Appearance** 依功能分段，內容超出視窗時顯示捲軸。Fullscreen 區段的設定可先編輯，但只會在 fullscreen 模式生效。
 - 編輯巢狀欄位只會改變指定的鍵。儲存時保留同一物件內未編輯的值；清除最後一個子欄位時保留空物件。若原值不是物件，保留原值並停用該物件的欄位。
